@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cordia</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Cordia home"><span class="mark">∞</span> cordia</a>
+    <span class="workspace-label">My Workspace</span>
+    <div class="top-actions">
+      <span id="status-pill" class="status-pill">Checking…</span>
+      <button id="signout-button" class="quiet-button" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <main id="app-shell" class="app-shell" hidden>
+    <aside id="chat-panel" class="chat-panel">
+      <div class="assistant-heading">
+        <span class="assistant-mark">C</span>
+        <div><strong>Cordia Agent</strong><small>Shape the work. Keep the source of truth.</small></div>
+      </div>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="survey-prompt" class="survey-prompt" hidden></div>
+      <form id="composer" class="composer">
+        <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?"></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </aside>
+
+    <section class="workspace">
+      <div class="workspace-heading">
+        <div><small>WORKSPACE</small><h1 id="workspace-title">Your workspace</h1><p id="workspace-subtitle">Built from what Cordia understands about you.</p></div>
+        <span class="view-pill">DASHVIEW</span>
+      </div>
+      <div id="notice" class="notice" hidden></div>
+      <section id="setup-card" class="setup-card" hidden></section>
+      <section id="artifact-grid" class="artifact-grid" aria-live="polite"></section>
+      <section class="memory-card">
+        <div><small>WORKSPACE MEMORY</small><h2>What Cordia understands</h2></div>
+        <pre id="memory"></pre>
+      </section>
+    </section>
+  </main>
+
+  <section id="auth-panel" class="auth-panel">
+    <div class="auth-card">
+      <span class="mark large">∞</span>
+      <small>CORDIA SHORT</small>
+      <h1>One workspace that learns how you work.</h1>
+      <p>Begin with Surveyor. Continue with the same Cordia Agent.</p>
+      <div class="auth-tabs">
+        <button type="button" data-auth-mode="register" class="active">Create account</button>
+        <button type="button" data-auth-mode="signin">Sign in</button>
+      </div>
+      <form id="auth-form">
+        <label>Email<input id="email" type="email" autocomplete="email" required></label>
+        <label>Password<input id="password" type="password" minlength="12" autocomplete="current-password" required></label>
+        <button id="auth-submit" type="submit">Create workspace</button>
+      </form>
+      <p id="auth-error" class="error" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+

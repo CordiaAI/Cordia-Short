@@ -323,6 +323,19 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    def oauth_connector_for_state(self, user_id: int, state: str) -> str | None:
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        now = self._now().isoformat()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT connector_id FROM oauth_states
+                WHERE state_hash = ? AND user_id = ? AND used_at IS NULL AND expires_at > ?
+                """,
+                (state_hash, user_id, now),
+            ).fetchone()
+        return row["connector_id"] if row else None
+
     def save_connection(
         self, user_id: int, connector_id: str, status: str, credentials: dict | None = None
     ) -> None:
