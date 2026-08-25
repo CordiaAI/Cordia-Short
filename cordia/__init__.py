@@ -1,0 +1,2 @@
+"""Small, honest Cordia core."""
+
