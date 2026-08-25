@@ -31,6 +31,9 @@ class FakeAgent:
 
 
 class FakeRuntime:
+    def __init__(self):
+        self.finished = []
+
     def start_connection(self, user_id, connector_id):
         return {
             "type": "oauth_redirect",
@@ -50,11 +53,16 @@ class FakeRuntime:
             "source": connector_id,
         }
 
+    def finish_connection(self, user_id, connector_id, setup_result):
+        self.finished.append((user_id, connector_id, setup_result))
+        return {"connector_id": connector_id, "status": "verified"}
+
 
 class ApplicationJourneyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
+        self.runtime = FakeRuntime()
         self.app = create_app(
             {
                 "TESTING": True,
@@ -63,7 +71,7 @@ class ApplicationJourneyTests(unittest.TestCase):
                 "SESSION_COOKIE_SECURE": False,
             },
             agent=FakeAgent(),
-            connector_runtime=FakeRuntime(),
+            connector_runtime=self.runtime,
         )
         self.client = self.app.test_client()
 
@@ -126,7 +134,33 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual(200, self.client.post("/api/signout").status_code)
         self.assertEqual("signed_out", self.client.get("/api/state").json["state"])
 
+    def test_oauth_callback_resolves_state_and_finishes_connection(self):
+        self.register()
+        store = self.app.extensions["cordia_store"]
+        state = store.create_oauth_state(1, "google_drive")
+
+        response = self.client.get(
+            "/api/connectors/oauth/callback", query_string={"state": state, "code": "code"}
+        )
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.location.endswith("/?connected=google_drive"))
+        self.assertEqual("google_drive", self.runtime.finished[0][1])
+
+    def test_oauth_denial_does_not_attempt_token_exchange(self):
+        self.register()
+        store = self.app.extensions["cordia_store"]
+        state = store.create_oauth_state(1, "google_drive")
+
+        response = self.client.get(
+            "/api/connectors/oauth/callback",
+            query_string={"state": state, "error": "access_denied"},
+        )
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.location.endswith("/?error=oauth_denied"))
+        self.assertEqual([], self.runtime.finished)
+
 
 if __name__ == "__main__":
     unittest.main()
-

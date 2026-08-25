@@ -209,6 +209,9 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         connector_id = store.oauth_connector_for_state(user_id, state)
         if not connector_id:
             return redirect("/?error=invalid_oauth_state")
+        if request.args.get("error"):
+            store.consume_oauth_state(user_id, connector_id, state)
+            return redirect("/?error=oauth_denied")
         try:
             runtime.finish_connection(
                 user_id,
@@ -227,4 +230,3 @@ app = create_app()
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5050, debug=False)
-
