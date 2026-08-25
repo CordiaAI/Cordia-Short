@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from cryptography.fernet import Fernet, InvalidToken
+
 
 SURVEY_FIELDS = ("name", "role", "goal", "apps", "communication")
 SURVEY_LABELS = {
@@ -27,7 +29,16 @@ class Store:
         self.workspace_root = Path(workspace_root)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self._cipher = Fernet(self._vault_key())
         self._initialize()
+
+    def _vault_key(self) -> bytes:
+        path = self.db_path.parent / ".vault.key"
+        if not path.exists():
+            temporary = path.with_suffix(".tmp")
+            temporary.write_bytes(Fernet.generate_key())
+            temporary.replace(path)
+        return path.read_bytes()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -80,6 +91,21 @@ class Store:
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS oauth_states (
+                    state_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    connector_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS connections (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    connector_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    credentials TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, connector_id)
                 );
                 """
             )
@@ -271,3 +297,75 @@ class Store:
             artifact.update({"id": int(row["id"]), "created_at": row["created_at"]})
             artifacts.append(artifact)
         return artifacts
+
+    def create_oauth_state(self, user_id: int, connector_id: str, minutes: int = 10) -> str:
+        state = secrets.token_urlsafe(32)
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        expires_at = self._now() + timedelta(minutes=minutes)
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO oauth_states(state_hash, user_id, connector_id, expires_at) VALUES (?, ?, ?, ?)",
+                (state_hash, user_id, connector_id, expires_at.isoformat()),
+            )
+        return state
+
+    def consume_oauth_state(self, user_id: int, connector_id: str, state: str) -> bool:
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        now = self._now().isoformat()
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE oauth_states SET used_at = ?
+                WHERE state_hash = ? AND user_id = ? AND connector_id = ?
+                  AND used_at IS NULL AND expires_at > ?
+                """,
+                (now, state_hash, user_id, connector_id, now),
+            )
+            return cursor.rowcount == 1
+
+    def save_connection(
+        self, user_id: int, connector_id: str, status: str, credentials: dict | None = None
+    ) -> None:
+        encrypted = None
+        if credentials is not None:
+            encrypted = self._cipher.encrypt(json.dumps(credentials).encode()).decode()
+        with self._connection() as connection:
+            existing = connection.execute(
+                "SELECT credentials FROM connections WHERE user_id = ? AND connector_id = ?",
+                (user_id, connector_id),
+            ).fetchone()
+            if encrypted is None and existing:
+                encrypted = existing["credentials"]
+            connection.execute(
+                """
+                INSERT INTO connections(user_id, connector_id, status, credentials, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, connector_id) DO UPDATE SET
+                    status = excluded.status,
+                    credentials = excluded.credentials,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, connector_id, status, encrypted, self._now().isoformat()),
+            )
+
+    def connection_status(self, user_id: int, connector_id: str) -> str | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT status FROM connections WHERE user_id = ? AND connector_id = ?",
+                (user_id, connector_id),
+            ).fetchone()
+        return row["status"] if row else None
+
+    def connection_credentials(self, user_id: int, connector_id: str) -> dict | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT credentials FROM connections WHERE user_id = ? AND connector_id = ?",
+                (user_id, connector_id),
+            ).fetchone()
+        if not row or not row["credentials"]:
+            return None
+        try:
+            plaintext = self._cipher.decrypt(row["credentials"].encode())
+        except InvalidToken as exc:
+            raise RuntimeError("stored connector credentials cannot be decrypted") from exc
+        return json.loads(plaintext)
