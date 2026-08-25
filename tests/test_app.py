@@ -6,7 +6,11 @@ from app import create_app
 
 
 class FakeAgent:
+    def __init__(self):
+        self.calls = []
+
     def respond(self, memory, messages):
+        self.calls.append((memory, list(messages)))
         latest = messages[-1]["content"].lower()
         if "connect" in latest:
             return {
@@ -63,6 +67,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.runtime = FakeRuntime()
+        self.agent = FakeAgent()
         self.app = create_app(
             {
                 "TESTING": True,
@@ -70,7 +75,7 @@ class ApplicationJourneyTests(unittest.TestCase):
                 "WORKSPACE_ROOT": root / "workspaces",
                 "SESSION_COOKIE_SECURE": False,
             },
-            agent=FakeAgent(),
+            agent=self.agent,
             connector_runtime=self.runtime,
         )
         self.client = self.app.test_client()
@@ -110,7 +115,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.complete_survey()
         state = self.client.get("/api/state").json
         self.assertEqual("workspace", state["state"])
-        self.assertIn("Google Drive, Slack", state["memory"])
+        self.assertIn("Google Drive, Slack", state["operator"])
         self.assertGreaterEqual(len(state["messages"]), 10)
 
         response = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
@@ -119,6 +124,56 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("workspace", response.json["state"])
         refreshed = self.client.get("/api/state").json
         self.assertEqual("oauth_redirect", refreshed["setup_card"]["type"])
+
+    def test_adjusting_response_updates_operator_and_retries_the_original_request(self):
+        self.register()
+        self.complete_survey()
+        first = self.client.post("/api/chat", json={"message": "Give me the plan"})
+        response_id = first.json["messages"][-1]["id"]
+
+        retried = self.client.post(
+            f"/api/responses/{response_id}/adjust",
+            json={"axis": "implementation", "target": 1},
+        )
+
+        self.assertEqual(200, retried.status_code)
+        self.assertEqual("implementation", retried.json["adjustment"]["axis"])
+        self.assertEqual(1, retried.json["adjustment"]["current"])
+        self.assertIn("Implementation preference: Implementation-first (1)", retried.json["operator"])
+        retry_operator, retry_messages = self.agent.calls[-1]
+        self.assertIn("Implementation preference: Implementation-first (1)", retry_operator)
+        self.assertEqual("Give me the plan", retry_messages[-1]["content"])
+
+    def test_adjusting_unknown_response_is_rejected_without_calling_agent(self):
+        self.register()
+        self.complete_survey()
+        prior_calls = len(self.agent.calls)
+
+        response = self.client.post(
+            "/api/responses/9999/adjust",
+            json={"axis": "directness", "target": 1},
+        )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual(prior_calls, len(self.agent.calls))
+
+    def test_only_agent_responses_are_eligible_for_operator_adjustment(self):
+        self.register()
+        self.complete_survey()
+        survey_messages = self.client.get("/api/state").json["messages"]
+        survey_response_id = next(
+            message["id"] for message in survey_messages if message["role"] == "assistant"
+        )
+
+        rejected = self.client.post(
+            f"/api/responses/{survey_response_id}/adjust",
+            json={"axis": "scope", "target": 1},
+        )
+        chat = self.client.post("/api/chat", json={"message": "Help me plan this"})
+
+        self.assertEqual(404, rejected.status_code)
+        self.assertTrue(all(message["kind"] == "survey" for message in survey_messages))
+        self.assertEqual("agent", chat.json["messages"][-1]["kind"])
 
     def test_agent_operation_saves_visible_artifact(self):
         self.register()

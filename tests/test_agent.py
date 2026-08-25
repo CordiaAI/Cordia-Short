@@ -16,6 +16,34 @@ def response_for(action):
 
 
 class AgentTests(unittest.TestCase):
+    def test_operator_profile_is_supplied_with_the_ternary_interpretation_contract(self):
+        observed = {}
+
+        def transport(url, headers, payload, timeout):
+            observed["payload"] = payload
+            return response_for(
+                {
+                    "action": "speak",
+                    "message": "Here is the implementation.",
+                    "connector_id": None,
+                    "operation_id": None,
+                }
+            )
+
+        Agent("api-key", transport=transport).respond(
+            "# Operator profile\n\n- Implementation preference: Implementation-first (1)",
+            [{"role": "user", "content": "Build it."}],
+        )
+
+        developer_content = "\n".join(
+            item["content"]
+            for item in observed["payload"]["input"]
+            if item["role"] == "developer"
+        )
+        self.assertIn("-1, 0, or 1", developer_content)
+        self.assertIn("Operator profile follows", developer_content)
+        self.assertIn("Implementation-first (1)", developer_content)
+
     def test_builds_strict_request_and_parses_connector_proposal(self):
         observed = {}
 

@@ -21,6 +21,21 @@ SURVEY_LABELS = {
     "apps": "Current apps",
     "communication": "Communication preference",
 }
+OPERATOR_AXES = ("context", "scope", "directness", "implementation")
+OPERATOR_AXIS_LABELS = {
+    "context": {
+        -1: "Explicit",
+        0: "Balanced",
+        1: "Implicit / high-context",
+    },
+    "scope": {-1: "Detail-first", 0: "Balanced", 1: "Big-picture"},
+    "directness": {-1: "Measured", 0: "Balanced", 1: "Direct"},
+    "implementation": {
+        -1: "Conceptual",
+        0: "Balanced",
+        1: "Implementation-first",
+    },
+}
 
 
 class Store:
@@ -83,6 +98,7 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    kind TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat', 'survey', 'agent')),
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -112,8 +128,35 @@ class Store:
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS operator_profiles (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    context INTEGER NOT NULL DEFAULT 0 CHECK (context IN (-1, 0, 1)),
+                    scope INTEGER NOT NULL DEFAULT 0 CHECK (scope IN (-1, 0, 1)),
+                    directness INTEGER NOT NULL DEFAULT 0 CHECK (directness IN (-1, 0, 1)),
+                    implementation INTEGER NOT NULL DEFAULT 0 CHECK (implementation IN (-1, 0, 1)),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS operator_adjustments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    response_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                    axis TEXT NOT NULL,
+                    target INTEGER NOT NULL CHECK (target IN (-1, 1)),
+                    previous INTEGER NOT NULL CHECK (previous IN (-1, 0, 1)),
+                    current INTEGER NOT NULL CHECK (current IN (-1, 0, 1)),
+                    label TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            message_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "kind" not in message_columns:
+                connection.execute(
+                    "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'"
+                )
 
     @staticmethod
     def _now() -> datetime:
@@ -222,7 +265,7 @@ class Store:
                 """,
                 (user_id, field, clean),
             )
-        self._write_memory(user_id)
+        self._write_operator(user_id)
 
     def survey_answers(self, user_id: int) -> dict[str, str]:
         with self._connection() as connection:
@@ -235,37 +278,157 @@ class Store:
         answers = self.survey_answers(user_id)
         return all(answers.get(field) for field in SURVEY_FIELDS)
 
-    def _write_memory(self, user_id: int) -> str:
+    def operator_profile(self, user_id: int) -> dict[str, int]:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT context, scope, directness, implementation FROM operator_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return {axis: 0 for axis in OPERATOR_AXES}
+        return {axis: int(row[axis]) for axis in OPERATOR_AXES}
+
+    def _write_operator(self, user_id: int) -> str:
         answers = self.survey_answers(user_id)
-        sections = ["# Workspace memory", ""]
+        profile = self.operator_profile(user_id)
+        sections = ["# Operator profile", "", "This profile helps Cordia interpret prompts and shape responses. It does not change factual truth or grant additional authority.", ""]
         for field in SURVEY_FIELDS:
             if field in answers:
                 sections.extend((f"## {SURVEY_LABELS[field]}", "", answers[field], ""))
-        memory = "\n".join(sections).rstrip() + "\n"
+        sections.extend(
+            (
+                "## Prompt interpretation map",
+                "",
+                f"- Context interpretation: {OPERATOR_AXIS_LABELS['context'][profile['context']]} ({profile['context']})",
+                f"- Scope preference: {OPERATOR_AXIS_LABELS['scope'][profile['scope']]} ({profile['scope']})",
+                "",
+                "## Response preference map",
+                "",
+                f"- Directness: {OPERATOR_AXIS_LABELS['directness'][profile['directness']]} ({profile['directness']})",
+                f"- Implementation preference: {OPERATOR_AXIS_LABELS['implementation'][profile['implementation']]} ({profile['implementation']})",
+                "",
+                "## Adjustment evidence",
+                "",
+            )
+        )
+        with self._connection() as connection:
+            adjustments = connection.execute(
+                """
+                SELECT response_id, label, axis, previous, current, created_at
+                FROM operator_adjustments WHERE user_id = ? ORDER BY id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        if adjustments:
+            for item in adjustments:
+                sections.append(
+                    f"- Response {item['response_id']}: User selected “{item['label']}.” "
+                    f"{item['axis'].capitalize()} changed from {item['previous']} to {item['current']}."
+                )
+        else:
+            sections.append("- No response adjustments recorded yet.")
+        operator = "\n".join(sections).rstrip() + "\n"
         directory = self.workspace_root / str(user_id)
         directory.mkdir(parents=True, exist_ok=True)
-        temporary = directory / "memory.md.tmp"
-        destination = directory / "memory.md"
-        temporary.write_text(memory, encoding="utf-8")
+        temporary = directory / "operator.md.tmp"
+        destination = directory / "operator.md"
+        temporary.write_text(operator, encoding="utf-8")
         temporary.replace(destination)
-        return memory
+        return operator
 
-    def memory_markdown(self, user_id: int) -> str:
-        destination = self.workspace_root / str(user_id) / "memory.md"
+    def operator_markdown(self, user_id: int) -> str:
+        destination = self.workspace_root / str(user_id) / "operator.md"
         if destination.exists():
             return destination.read_text(encoding="utf-8")
-        return self._write_memory(user_id)
+        return self._write_operator(user_id)
 
-    def add_message(self, user_id: int, role: str, content: str) -> int:
+    def memory_markdown(self, user_id: int) -> str:
+        return self.operator_markdown(user_id)
+
+    def adjust_operator(
+        self,
+        user_id: int,
+        response_id: int,
+        axis: str,
+        target: int,
+        label: str,
+    ) -> dict:
+        if axis not in OPERATOR_AXES:
+            raise ValueError("unknown operator axis")
+        if target not in (-1, 1) or isinstance(target, bool):
+            raise ValueError("target must be -1 or 1")
+        clean_label = str(label).strip()
+        if not clean_label or len(clean_label) > 80:
+            raise ValueError("adjustment label is invalid")
+        with self._connection() as connection:
+            response = connection.execute(
+                "SELECT id FROM messages WHERE id = ? AND user_id = ? AND role = 'assistant' AND kind = 'agent'",
+                (response_id, user_id),
+            ).fetchone()
+            if not response:
+                raise LookupError("assistant response not found")
+            row = connection.execute(
+                "SELECT context, scope, directness, implementation FROM operator_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            current_profile = (
+                {name: int(row[name]) for name in OPERATOR_AXES}
+                if row
+                else {name: 0 for name in OPERATOR_AXES}
+            )
+            previous = current_profile[axis]
+            current = previous if previous == target else previous + (1 if target > previous else -1)
+            current_profile[axis] = current
+            now = self._now().isoformat()
+            connection.execute(
+                """
+                INSERT INTO operator_profiles(user_id, context, scope, directness, implementation, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    context = excluded.context,
+                    scope = excluded.scope,
+                    directness = excluded.directness,
+                    implementation = excluded.implementation,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    current_profile["context"],
+                    current_profile["scope"],
+                    current_profile["directness"],
+                    current_profile["implementation"],
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO operator_adjustments(
+                    user_id, response_id, axis, target, previous, current, label, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, response_id, axis, target, previous, current, clean_label, now),
+            )
+        self._write_operator(user_id)
+        return {
+            "axis": axis,
+            "target": target,
+            "previous": previous,
+            "current": current,
+            "label": clean_label,
+        }
+
+    def add_message(self, user_id: int, role: str, content: str, kind: str = "chat") -> int:
         if role not in {"user", "assistant"}:
             raise ValueError("invalid message role")
+        if kind not in {"chat", "survey", "agent"}:
+            raise ValueError("invalid message kind")
         clean = content.strip()
         if not clean:
             raise ValueError("message required")
         with self._connection() as connection:
             cursor = connection.execute(
-                "INSERT INTO messages(user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (user_id, role, clean, self._now().isoformat()),
+                "INSERT INTO messages(user_id, role, kind, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, role, kind, clean, self._now().isoformat()),
             )
             return int(cursor.lastrowid)
 
@@ -273,14 +436,38 @@ class Store:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id, role, content, created_at FROM (
-                    SELECT id, role, content, created_at
+                SELECT id, role, kind, content, created_at FROM (
+                    SELECT id, role, kind, content, created_at
                     FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT ?
                 ) ORDER BY id ASC
                 """,
                 (user_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def messages_before_response(
+        self, user_id: int, response_id: int, limit: int = 30
+    ) -> list[dict]:
+        with self._connection() as connection:
+            response = connection.execute(
+                "SELECT id FROM messages WHERE id = ? AND user_id = ? AND role = 'assistant' AND kind = 'agent'",
+                (response_id, user_id),
+            ).fetchone()
+            if not response:
+                raise LookupError("assistant response not found")
+            rows = connection.execute(
+                """
+                SELECT id, role, kind, content, created_at FROM (
+                    SELECT id, role, kind, content, created_at FROM messages
+                    WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?
+                ) ORDER BY id ASC
+                """,
+                (user_id, response_id, limit),
+            ).fetchall()
+        messages = [dict(row) for row in rows]
+        if not messages or messages[-1]["role"] != "user":
+            raise LookupError("original user request not found")
+        return messages
 
     def save_artifact(self, user_id: int, artifact: dict) -> int:
         with self._connection() as connection:

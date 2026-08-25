@@ -5,18 +5,19 @@ Cordia Short is an isolated, clean-room candidate foundation for Cordia. It does
 The product path is intentionally narrow:
 
 ```text
-Sign in -> Surveyor -> memory.md -> same Cordia Agent conversation
+Sign in -> Surveyor -> operator.md -> same Cordia Agent conversation
         -> Google Drive setup card -> verified Drive operation -> artifact window
 ```
 
 ## Observed status on 2026-08-24
 
-- Registration, password authentication, sessions, Surveyor, readable workspace memory, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
+- Registration, password authentication, sessions, Surveyor, readable `operator.md`, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
+- Every Cordia Agent response offers **Helpful** and **Adjust response** controls. A selected adjustment moves one operator preference toward `-1` or `1`, records evidence against that response, updates `operator.md`, and retries the original request.
 - A real OpenAI request through `cordia.agent.Agent` returned a valid `propose_connector` action for Google Drive.
 - The complete browser path was exercised from sign-in through all five Surveyor answers and the real agent request. The browser console had no errors.
 - The generic setup card persisted after a full page refresh; this was caught and fixed during browser verification.
 - Google Drive OAuth has not been completed with a real Google account because `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are not configured. The application reports this explicitly and does not claim Drive is connected.
-- The automated suite contains 29 passing tests. Provider-network responses in connector tests are injected test evidence, not a live Google verification.
+- The automated suite contains 36 passing tests. Provider-network responses in connector tests are injected test evidence, not a live Google verification.
 
 ## Run locally
 
@@ -63,6 +64,6 @@ Restart the application. Sign in, complete Surveyor, and tell Cordia `Connect Go
 - `cordia/connectors.py` contains provider data and aliases.
 - `cordia/connector_runtime.py` contains the only connector execution path.
 - No provider-specific Python modules or UI components.
-- Credentials are encrypted at rest and excluded from model input, memory, messages, artifacts, and responses.
+- Credentials are encrypted at rest and excluded from model input, operator memory, messages, artifacts, and responses.
 - Only Google Drive metadata read access is declared.
 - No deployment, billing, installer, Alidora, marketplace, or automation work belongs in this slice.

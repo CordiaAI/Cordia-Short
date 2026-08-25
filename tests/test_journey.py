@@ -39,7 +39,7 @@ class StoreJourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already registered"):
             self.store.register("PERSON@example.com", "another password")
 
-    def test_survey_answers_write_readable_ordered_memory(self):
+    def test_survey_answers_write_readable_ordered_operator_profile(self):
         user_id = self.store.register("person@example.com", "correct horse battery")
         self.store.save_survey_answer(user_id, "name", "Jordan")
         self.store.save_survey_answer(user_id, "role", "Operations lead")
@@ -47,14 +47,75 @@ class StoreJourneyTests(unittest.TestCase):
         self.store.save_survey_answer(user_id, "apps", "Google Drive, Slack")
         self.store.save_survey_answer(user_id, "communication", "Big picture first")
 
-        memory = self.store.memory_markdown(user_id)
+        operator = self.store.operator_markdown(user_id)
 
-        self.assertIn("# Workspace memory", memory)
-        self.assertLess(memory.index("## Name"), memory.index("## Role"))
-        self.assertIn("Google Drive, Slack", memory)
-        memory_path = Path(self.temp.name) / "workspaces" / str(user_id) / "memory.md"
-        self.assertEqual(memory, memory_path.read_text(encoding="utf-8"))
+        self.assertIn("# Operator profile", operator)
+        self.assertLess(operator.index("## Name"), operator.index("## Role"))
+        self.assertIn("Google Drive, Slack", operator)
+        self.assertIn("Context interpretation: Balanced (0)", operator)
+        self.assertIn("Implementation preference: Balanced (0)", operator)
+        operator_path = Path(self.temp.name) / "workspaces" / str(user_id) / "operator.md"
+        self.assertEqual(operator, operator_path.read_text(encoding="utf-8"))
+        self.assertFalse((operator_path.parent / "memory.md").exists())
         self.assertTrue(self.store.survey_complete(user_id))
+
+    def test_response_correction_moves_one_ternary_coordinate_and_records_evidence(self):
+        user_id = self.store.register("person@example.com", "correct horse battery")
+        self.store.add_message(user_id, "user", "Give me the plan.")
+        response_id = self.store.add_message(
+            user_id, "assistant", "Here is a conceptual overview.", kind="agent"
+        )
+
+        result = self.store.adjust_operator(
+            user_id,
+            response_id=response_id,
+            axis="implementation",
+            target=1,
+            label="Give me the implementation",
+        )
+
+        self.assertEqual(0, result["previous"])
+        self.assertEqual(1, result["current"])
+        self.assertEqual(1, self.store.operator_profile(user_id)["implementation"])
+        operator = self.store.operator_markdown(user_id)
+        self.assertIn("Implementation preference: Implementation-first (1)", operator)
+        self.assertIn(f"Response {response_id}", operator)
+        self.assertIn('User selected “Give me the implementation.”', operator)
+
+    def test_response_correction_moves_toward_the_selected_endpoint_and_clamps(self):
+        user_id = self.store.register("person@example.com", "correct horse battery")
+        self.store.add_message(user_id, "user", "Give me the plan.")
+        response_id = self.store.add_message(
+            user_id, "assistant", "Here is a response.", kind="agent"
+        )
+
+        self.store.adjust_operator(user_id, response_id, "scope", 1, "Show the bigger picture")
+        clamped = self.store.adjust_operator(
+            user_id, response_id, "scope", 1, "Show the bigger picture"
+        )
+        balanced = self.store.adjust_operator(
+            user_id, response_id, "scope", -1, "Focus on the details"
+        )
+
+        self.assertEqual(1, clamped["current"])
+        self.assertEqual(0, balanced["current"])
+
+    def test_response_correction_rejects_invalid_axis_target_and_foreign_response(self):
+        first_user = self.store.register("first@example.com", "correct horse battery")
+        second_user = self.store.register("second@example.com", "correct horse battery")
+        self.store.add_message(second_user, "user", "Help me.")
+        foreign_response = self.store.add_message(
+            second_user, "assistant", "Of course.", kind="agent"
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown operator axis"):
+            self.store.adjust_operator(first_user, foreign_response, "tone", 1, "Be direct")
+        with self.assertRaisesRegex(ValueError, "target must be -1 or 1"):
+            self.store.adjust_operator(first_user, foreign_response, "directness", 0, "Balanced")
+        with self.assertRaisesRegex(LookupError, "assistant response not found"):
+            self.store.adjust_operator(
+                first_user, foreign_response, "directness", 1, "Be more direct"
+            )
 
     def test_conversation_continues_and_artifacts_persist(self):
         user_id = self.store.register("person@example.com", "correct horse battery")

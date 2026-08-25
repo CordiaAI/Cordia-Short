@@ -19,11 +19,45 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function renderMessages(messages = []) {
+function adjustmentControls(responseId) {
+  return `
+    <div class="message-actions">
+      <button type="button" data-helpful>Helpful</button>
+      <button type="button" data-adjust-toggle>Adjust response</button>
+    </div>
+    <div class="adjustment-panel" hidden>
+      <strong>What should Cordia change?</strong>
+      <p>Choose the direction that would make this response more useful.</p>
+      <div class="adjustment-row"><span>Prompt context</span><div>
+        <button type="button" data-axis="context" data-target="-1">Use only what I said</button>
+        <button type="button" data-axis="context" data-target="1">Use more context</button>
+      </div></div>
+      <div class="adjustment-row"><span>Level of detail</span><div>
+        <button type="button" data-axis="scope" data-target="-1">Focus on the details</button>
+        <button type="button" data-axis="scope" data-target="1">Show the bigger picture</button>
+      </div></div>
+      <div class="adjustment-row"><span>Communication style</span><div>
+        <button type="button" data-axis="directness" data-target="-1">Use a measured tone</button>
+        <button type="button" data-axis="directness" data-target="1">Be more direct</button>
+      </div></div>
+      <div class="adjustment-row"><span>Type of response</span><div>
+        <button type="button" data-axis="implementation" data-target="-1">Explain the reasoning</button>
+        <button type="button" data-axis="implementation" data-target="1">Give me the implementation</button>
+      </div></div>
+    </div>`;
+}
+
+function renderMessages(messages = [], allowAdjustments = false) {
   const container = byId("messages");
-  container.innerHTML = messages.map((message) =>
-    `<div class="message ${escapeHtml(message.role)}">${escapeHtml(message.content)}</div>`
-  ).join("");
+  container.innerHTML = messages.map((message) => {
+    const controls = allowAdjustments && message.role === "assistant" && message.kind === "agent"
+      ? adjustmentControls(message.id)
+      : "";
+    return `<div class="message-block ${escapeHtml(message.role)}" data-response-id="${escapeHtml(message.id)}">
+      <div class="message ${escapeHtml(message.role)}">${escapeHtml(message.content)}</div>
+      ${controls}
+    </div>`;
+  }).join("");
   container.scrollTop = container.scrollHeight;
 }
 
@@ -76,15 +110,15 @@ function render(state, transient = {}) {
   byId("status-pill").textContent = signedOut ? "Signed out" : state.state === "survey" ? "Surveyor" : "Agent online";
   if (signedOut) return;
 
-  renderMessages(state.messages);
+  renderMessages(state.messages, state.state === "workspace");
   renderArtifacts(state.artifacts);
   renderSetupCard(transient.setup_card || state.setup_card || null);
-  byId("memory").textContent = state.memory || "Cordia is still learning your workspace.";
+  byId("operator").textContent = state.operator || "Cordia is still learning how you work.";
   const survey = state.survey;
   byId("survey-prompt").hidden = !survey;
   byId("survey-prompt").textContent = survey ? survey.question : "";
   byId("message-input").placeholder = survey ? "Answer Surveyor…" : "Message Cordia…";
-  const nameMatch = (state.memory || "").match(/## Name\s+([^#\n][^\n]*)/);
+  const nameMatch = (state.operator || "").match(/## Name\s+([^#\n][^\n]*)/);
   byId("workspace-title").textContent = nameMatch ? `${nameMatch[1]}'s workspace` : "Your workspace";
   const params = new URLSearchParams(location.search);
   const notice = byId("notice");
@@ -141,6 +175,44 @@ byId("composer").addEventListener("submit", async (event) => {
     notice.textContent = error.message;
     notice.hidden = false;
   } finally { input.disabled = false; input.focus(); }
+});
+
+byId("messages").addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  const block = button.closest(".message-block");
+  if (!block) return;
+  if (button.hasAttribute("data-helpful")) {
+    button.textContent = "Thanks — noted";
+    button.disabled = true;
+    return;
+  }
+  const panel = block.querySelector(".adjustment-panel");
+  if (button.hasAttribute("data-adjust-toggle")) {
+    panel.hidden = !panel.hidden;
+    button.setAttribute("aria-expanded", String(!panel.hidden));
+    return;
+  }
+  if (!button.dataset.axis) return;
+  panel.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+  const notice = byId("notice");
+  notice.textContent = "Updating your operator profile and revising the response…";
+  notice.hidden = false;
+  try {
+    const state = await api(`/api/responses/${block.dataset.responseId}/adjust`, {
+      method: "POST",
+      body: JSON.stringify({ axis: button.dataset.axis, target: Number(button.dataset.target) }),
+    });
+    render(state, state);
+    const updatedNotice = byId("notice");
+    updatedNotice.textContent = "Preference updated. Cordia revised the response.";
+    updatedNotice.hidden = false;
+  } catch (error) {
+    render(error.payload || currentState);
+    const errorNotice = byId("notice");
+    errorNotice.textContent = error.message;
+    errorNotice.hidden = false;
+  }
 });
 
 byId("signout-button").addEventListener("click", async () => {

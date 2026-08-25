@@ -19,6 +19,16 @@ SURVEY_QUESTIONS = {
     "apps": "Which apps or services are already part of that work?",
     "communication": "How should I explain things to you: big picture first, detail first, visual, or another way?",
 }
+ADJUSTMENT_LABELS = {
+    ("context", -1): "Use only what I said",
+    ("context", 1): "Use more context",
+    ("scope", -1): "Focus on the details",
+    ("scope", 1): "Show the bigger picture",
+    ("directness", -1): "Use a measured tone",
+    ("directness", 1): "Be more direct",
+    ("implementation", -1): "Explain the reasoning",
+    ("implementation", 1): "Give me the implementation",
+}
 
 
 def load_local_env(path: Path) -> None:
@@ -76,7 +86,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         return {
             "state": "survey" if survey else "workspace",
             "survey": survey,
-            "memory": store.memory_markdown(user_id),
+            "operator": store.operator_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": store.artifacts(user_id),
             "setup_card": store.setup_card(user_id),
@@ -152,7 +162,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         answer = str((request.get_json(silent=True) or {}).get("answer", "")).strip()
         if not answer:
             return jsonify({"ok": False, "error": "answer is required"}), 400
-        store.add_message(user_id, "user", answer)
+        store.add_message(user_id, "user", answer, kind="survey")
         store.save_survey_answer(user_id, current["field"], answer)
         upcoming = next_survey(user_id)
         assistant_message = (
@@ -160,7 +170,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             if upcoming
             else "I saved that understanding. We can keep talking here and build your workspace together."
         )
-        store.add_message(user_id, "assistant", assistant_message)
+        store.add_message(user_id, "assistant", assistant_message, kind="survey")
         return jsonify({"ok": True, "assistant": assistant_message, **state_payload(user_id)})
 
     @app.post("/api/chat")
@@ -173,7 +183,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             return jsonify({"ok": False, "error": "message is required"}), 400
         store.add_message(user_id, "user", message)
         try:
-            action = cordia_agent.respond(store.memory_markdown(user_id), store.messages(user_id))
+            action = cordia_agent.respond(store.operator_markdown(user_id), store.messages(user_id))
             setup_card = None
             artifact = None
             if action["action"] == "propose_connector":
@@ -185,7 +195,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
                 )
                 artifact_id = store.save_artifact(user_id, artifact)
                 artifact = {**artifact, "id": artifact_id}
-            store.add_message(user_id, "assistant", action["message"])
+            store.add_message(user_id, "assistant", action["message"], kind="agent")
             return jsonify(
                 {
                     "ok": True,
@@ -202,6 +212,50 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         except (InvalidAgentAction, ConnectorError) as exc:
             message = f"Cordia could not complete that request: {exc}"
             store.add_message(user_id, "assistant", message)
+            return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 422
+
+    @app.post("/api/responses/<int:response_id>/adjust")
+    def adjust_response(response_id: int):
+        user_id = require_user()
+        payload = request.get_json(silent=True) or {}
+        axis = payload.get("axis")
+        target = payload.get("target")
+        label = ADJUSTMENT_LABELS.get((axis, target))
+        if not label:
+            return jsonify({"ok": False, "error": "Choose one available response adjustment"}), 400
+        try:
+            retry_messages = store.messages_before_response(user_id, response_id)
+            adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
+            action = cordia_agent.respond(store.operator_markdown(user_id), retry_messages)
+            setup_card = None
+            artifact = None
+            if action["action"] == "propose_connector":
+                setup_card = runtime.start_connection(user_id, action["connector_id"])
+                store.save_setup_card(user_id, setup_card)
+            elif action["action"] == "run_operation":
+                artifact = runtime.call_operation(
+                    user_id, action["connector_id"], action["operation_id"], {}
+                )
+                artifact_id = store.save_artifact(user_id, artifact)
+                artifact = {**artifact, "id": artifact_id}
+            store.add_message(user_id, "assistant", action["message"], kind="agent")
+            return jsonify(
+                {
+                    "ok": True,
+                    "assistant": action["message"],
+                    "adjustment": adjustment,
+                    "setup_card": setup_card,
+                    "artifact": artifact,
+                    **state_payload(user_id),
+                }
+            )
+        except LookupError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except AgentUnavailable as exc:
+            message = f"Your preference was saved, but Cordia could not revise the response: {exc}"
+            return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 503
+        except (InvalidAgentAction, ConnectorError) as exc:
+            message = f"Your preference was saved, but Cordia could not revise the response: {exc}"
             return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 422
 
     @app.get("/api/connectors/oauth/callback")
