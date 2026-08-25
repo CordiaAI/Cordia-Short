@@ -14,6 +14,7 @@ Sign in -> Surveyor -> memory.md -> same Cordia Agent conversation
 - Registration, password authentication, sessions, Surveyor, readable workspace memory, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
 - A real OpenAI request through `cordia.agent.Agent` returned a valid `propose_connector` action for Google Drive.
 - The complete browser path was exercised from sign-in through all five Surveyor answers and the real agent request. The browser console had no errors.
+- The generic setup card persisted after a full page refresh; this was caught and fixed during browser verification.
 - Google Drive OAuth has not been completed with a real Google account because `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are not configured. The application reports this explicitly and does not claim Drive is connected.
 - The automated suite contains 29 passing tests. Provider-network responses in connector tests are injected test evidence, not a live Google verification.
 
@@ -65,4 +66,3 @@ Restart the application. Sign in, complete Surveyor, and tell Cordia `Connect Go
 - Credentials are encrypted at rest and excluded from model input, memory, messages, artifacts, and responses.
 - Only Google Drive metadata read access is declared.
 - No deployment, billing, installer, Alidora, marketplace, or automation work belongs in this slice.
-

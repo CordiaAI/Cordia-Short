@@ -23,6 +23,7 @@ Blocked for the same reason. The implemented chat rail, setup card, empty artifa
 - Observed the saved `memory.md` content in the workspace.
 - Sent `Connect Google Drive` through the real OpenAI-backed Cordia Agent.
 - Observed a generic connector setup card reporting `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as missing.
+- Reloaded the full page and confirmed the setup card remained visible from persisted workspace state.
 - Checked browser warning and error logs: none observed.
 
 ## Findings
