@@ -107,6 +107,11 @@ class Store:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, connector_id)
                 );
+                CREATE TABLE IF NOT EXISTS setup_cards (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -382,3 +387,26 @@ class Store:
         except InvalidToken as exc:
             raise RuntimeError("stored connector credentials cannot be decrypted") from exc
         return json.loads(plaintext)
+
+    def save_setup_card(self, user_id: int, card: dict) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO setup_cards(user_id, payload, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, json.dumps(card), self._now().isoformat()),
+            )
+
+    def setup_card(self, user_id: int) -> dict | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM setup_cards WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def clear_setup_card(self, user_id: int) -> None:
+        with self._connection() as connection:
+            connection.execute("DELETE FROM setup_cards WHERE user_id = ?", (user_id,))

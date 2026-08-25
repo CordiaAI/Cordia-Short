@@ -117,6 +117,8 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("oauth_redirect", response.json["setup_card"]["type"])
         self.assertEqual("workspace", response.json["state"])
+        refreshed = self.client.get("/api/state").json
+        self.assertEqual("oauth_redirect", refreshed["setup_card"]["type"])
 
     def test_agent_operation_saves_visible_artifact(self):
         self.register()

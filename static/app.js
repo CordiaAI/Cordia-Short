@@ -78,7 +78,7 @@ function render(state, transient = {}) {
 
   renderMessages(state.messages);
   renderArtifacts(state.artifacts);
-  renderSetupCard(transient.setup_card || null);
+  renderSetupCard(transient.setup_card || state.setup_card || null);
   byId("memory").textContent = state.memory || "Cordia is still learning your workspace.";
   const survey = state.survey;
   byId("survey-prompt").hidden = !survey;

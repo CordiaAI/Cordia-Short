@@ -18,6 +18,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
         javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("function renderSetupCard", javascript)
         self.assertIn("function renderArtifact", javascript)
+        self.assertIn("state.setup_card", javascript)
         self.assertIn("/api/survey", javascript)
         self.assertIn("/api/chat", javascript)
 

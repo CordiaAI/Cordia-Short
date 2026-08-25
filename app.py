@@ -79,6 +79,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             "memory": store.memory_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": store.artifacts(user_id),
+            "setup_card": store.setup_card(user_id),
         }
 
     @app.errorhandler(PermissionError)
@@ -177,6 +178,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             artifact = None
             if action["action"] == "propose_connector":
                 setup_card = runtime.start_connection(user_id, action["connector_id"])
+                store.save_setup_card(user_id, setup_card)
             elif action["action"] == "run_operation":
                 artifact = runtime.call_operation(
                     user_id, action["connector_id"], action["operation_id"], {}
@@ -211,6 +213,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             return redirect("/?error=invalid_oauth_state")
         if request.args.get("error"):
             store.consume_oauth_state(user_id, connector_id, state)
+            store.clear_setup_card(user_id)
             return redirect("/?error=oauth_denied")
         try:
             runtime.finish_connection(
@@ -220,6 +223,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             )
         except ConnectorError:
             return redirect("/?error=connector_verification_failed")
+        store.clear_setup_card(user_id)
         return redirect(f"/?connected={connector_id}")
 
     return app
