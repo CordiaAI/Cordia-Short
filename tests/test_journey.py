@@ -1,9 +1,13 @@
+import json
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+from app import create_app
+from cordia.connector_runtime import ConnectorRuntime
 from cordia.store import Store
 
 
@@ -141,6 +145,108 @@ class StoreJourneyTests(unittest.TestCase):
         artifacts = self.store.artifacts(user_id)
         self.assertEqual(artifact_id, artifacts[0]["id"])
         self.assertEqual("Plan.md", artifacts[0]["rows"][0][0])
+
+
+class ScriptedConnectorAgent:
+    def respond(self, memory, messages):
+        if "connect" in messages[-1]["content"].lower():
+            return {
+                "action": "propose_connector",
+                "message": "Google Drive is ready for authorization.",
+                "connector_id": "google_drive",
+                "operation_id": None,
+            }
+        return {
+            "action": "run_operation",
+            "message": "I added your recent Drive files to the workspace.",
+            "connector_id": "google_drive",
+            "operation_id": "list_recent_files",
+        }
+
+
+class RealMCPConnectorJourneyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.calls = []
+        env = {
+            "GOOGLE_CLIENT_ID": "google-client-id",
+            "GOOGLE_CLIENT_SECRET": "google-client-secret",
+            "CORDIA_BASE_URL": "http://localhost",
+        }
+        store = Store(root / "cordia.db", root / "workspaces")
+        runtime = ConnectorRuntime(store, env=env, transport=self.transport)
+        self.app = create_app(
+            {
+                "TESTING": True,
+                "DATABASE": root / "cordia.db",
+                "WORKSPACE_ROOT": root / "workspaces",
+                "SESSION_COOKIE_SECURE": False,
+            },
+            agent=ScriptedConnectorAgent(),
+            connector_runtime=runtime,
+        )
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def transport(self, method, url, headers, data, timeout):
+        self.calls.append({"method": method, "url": url, "headers": headers, "data": data})
+        if url == "https://oauth2.googleapis.com/token":
+            return {
+                "access_token": "provider-access-token",
+                "refresh_token": "provider-refresh-token",
+                "expires_in": 3600,
+                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
+                "token_type": "Bearer",
+            }
+        if url.startswith("https://www.googleapis.com/drive/v3/files"):
+            return {
+                "files": [
+                    {
+                        "id": "file-1",
+                        "name": "Plan.md",
+                        "mimeType": "text/markdown",
+                        "modifiedTime": "2026-08-25T12:00:00Z",
+                        "webViewLink": "https://drive.google.com/file-1",
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    def test_google_oauth_to_mcp_operation_creates_provider_derived_artifact(self):
+        register = self.client.post(
+            "/api/register",
+            json={"email": "person@example.com", "password": "correct horse battery"},
+        )
+        self.assertEqual(201, register.status_code)
+        for answer in [
+            "Jordan",
+            "Operations lead",
+            "Find documents",
+            "Google Drive",
+            "Big picture first",
+        ]:
+            self.assertEqual(200, self.client.post("/api/survey", json={"answer": answer}).status_code)
+
+        setup = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
+        state = parse_qs(urlparse(setup.json["setup_card"]["action_url"]).query)["state"][0]
+        callback = self.client.get(
+            "/api/connectors/oauth/callback", query_string={"state": state, "code": "real-code"}
+        )
+        operation = self.client.post("/api/chat", json={"message": "Show recent Drive files"})
+
+        self.assertEqual(302, callback.status_code)
+        self.assertEqual(200, operation.status_code)
+        self.assertEqual("Plan.md", operation.json["artifact"]["rows"][0][0])
+        self.assertEqual("Plan.md", operation.json["artifacts"][0]["rows"][0][0])
+        serialized = json.dumps(operation.json)
+        self.assertNotIn("provider-access-token", serialized)
+        self.assertNotIn("provider-refresh-token", serialized)
+        self.assertGreaterEqual(
+            len([call for call in self.calls if "/drive/v3/files" in call["url"]]), 2
+        )
 
 
 if __name__ == "__main__":

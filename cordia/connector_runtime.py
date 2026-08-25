@@ -76,6 +76,7 @@ class ConnectorRuntime:
                 "response_type": "code",
                 "scope": auth["scope"],
                 "access_type": "offline",
+                "include_granted_scopes": "true",
                 "prompt": "consent",
                 "state": state,
             }
@@ -163,9 +164,7 @@ class ConnectorRuntime:
         }
 
     def _execute(self, user_id: int, connector: dict, operation: dict) -> dict:
-        credentials = self.store.connection_credentials(user_id, connector["id"])
-        if not credentials or not credentials.get("access_token"):
-            raise ConnectorError("connector credentials are missing")
+        credentials = self._fresh_credentials(user_id, connector)
         query = urllib.parse.urlencode(operation.get("query", {}))
         url = operation["url"] + (("?" + query) if query else "")
         try:
@@ -178,3 +177,50 @@ class ConnectorRuntime:
             )
         except Exception as exc:
             raise ConnectorError("provider operation failed") from exc
+
+    def _fresh_credentials(self, user_id: int, connector: dict) -> dict:
+        credentials = self.store.connection_credentials(user_id, connector["id"])
+        if not credentials or not credentials.get("access_token"):
+            raise ConnectorError("connector credentials are missing")
+        if "expires_at" not in credentials:
+            return credentials
+        expires_at = int(credentials["expires_at"])
+        if expires_at > int(time.time()) + 30:
+            return credentials
+        refresh_token = credentials.get("refresh_token")
+        if not refresh_token:
+            self.store.save_connection(user_id, connector["id"], "needs_attention")
+            raise ConnectorError("connector authorization expired; reconnect required")
+        auth = connector["auth"]
+        required = [auth["client_id_env"], auth["client_secret_env"]]
+        if any(not self.env.get(name) for name in required):
+            raise ConnectorError("OAuth server configuration is missing")
+        try:
+            token = self.transport(
+                "POST",
+                auth["token_url"],
+                {},
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": self.env[auth["client_id_env"]],
+                    "client_secret": self.env[auth["client_secret_env"]],
+                },
+                30,
+            )
+        except Exception as exc:
+            self.store.save_connection(user_id, connector["id"], "needs_attention")
+            raise ConnectorError("OAuth token refresh failed") from exc
+        if not token.get("access_token"):
+            self.store.save_connection(user_id, connector["id"], "needs_attention")
+            raise ConnectorError("OAuth token refresh returned no access token")
+        refreshed = {
+            **credentials,
+            "access_token": token["access_token"],
+            "refresh_token": token.get("refresh_token") or refresh_token,
+            "expires_at": int(time.time()) + int(token.get("expires_in", 3600)),
+            "scope": token.get("scope") or credentials.get("scope", ""),
+            "token_type": token.get("token_type") or credentials.get("token_type", "Bearer"),
+        }
+        self.store.save_connection(user_id, connector["id"], "verified", refreshed)
+        return refreshed
