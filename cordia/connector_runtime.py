@@ -76,7 +76,7 @@ class ConnectorRuntime:
                 "response_type": "code",
                 "scope": auth["scope"],
                 "access_type": "offline",
-                "include_granted_scopes": "true",
+                "include_granted_scopes": "false",
                 "prompt": "consent",
                 "state": state,
             }
