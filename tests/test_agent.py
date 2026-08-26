@@ -73,6 +73,15 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(output_format["strict"])
         self.assertFalse(output_format["schema"]["additionalProperties"])
 
+        developer_content = "\n".join(
+            item["content"]
+            for item in observed["payload"]["input"]
+            if item["role"] == "developer"
+        )
+        self.assertIn("openai_api", developer_content)
+        self.assertIn("list_models", developer_content)
+        self.assertNotIn("GOOGLE_CLIENT_SECRET", developer_content)
+
     def test_redacts_secret_shaped_text_before_model_input(self):
         observed = {}
 

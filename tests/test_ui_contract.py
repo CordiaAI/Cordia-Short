@@ -21,6 +21,9 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("state.setup_card", javascript)
         self.assertIn("/api/survey", javascript)
         self.assertIn("/api/chat", javascript)
+        self.assertIn("credential_form", javascript)
+        self.assertIn("/api/connectors/setup", javascript)
+        self.assertIn('type="${escapeHtml(field.type)}"', javascript)
 
     def test_visual_tokens_match_cordia_identity(self):
         css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")

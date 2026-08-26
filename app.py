@@ -302,6 +302,21 @@ def create_app(
         store.clear_setup_card(user_id)
         return redirect(f"/?connected={connector_id}")
 
+    @app.post("/api/connectors/setup")
+    def connector_setup():
+        user_id = require_user()
+        payload = request.get_json(silent=True) or {}
+        connector_id = str(payload.get("connector_id", "")).strip()
+        credentials = payload.get("credentials")
+        if not connector_id or not isinstance(credentials, dict):
+            return jsonify({"ok": False, "error": "connector and credentials are required"}), 400
+        try:
+            connection = runtime.finish_connection(user_id, connector_id, credentials)
+        except ConnectorError as exc:
+            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
+        store.clear_setup_card(user_id)
+        return jsonify({"ok": True, "connection": connection, **state_payload(user_id)})
+
     return app
 
 

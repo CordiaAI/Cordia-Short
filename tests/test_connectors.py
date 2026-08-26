@@ -20,6 +20,13 @@ class ConnectorRegistryTests(unittest.TestCase):
     def test_unknown_connector_returns_none(self):
         self.assertIsNone(resolve_connector("imaginary service"))
 
+    def test_api_key_connector_aliases_resolve_to_one_declarative_record(self):
+        connector = resolve_connector("OpenAI")
+
+        self.assertEqual("openai_api", connector["id"])
+        self.assertEqual("api_key", connector["auth"]["kind"])
+        self.assertEqual(["list_models"], list(connector["operations"]))
+
     def test_malformed_record_is_rejected(self):
         malformed = {
             "broken": {
@@ -35,6 +42,52 @@ class ConnectorRegistryTests(unittest.TestCase):
     def test_registry_contains_no_runtime_callable(self):
         self.assertNotIn("handler", json.dumps(CONNECTORS))
         self.assertEqual("oauth2", CONNECTORS["google_drive"]["auth"]["kind"])
+
+    def test_api_key_record_requires_https_fields_header_and_verification_operation(self):
+        base = {
+            "id": "custom",
+            "name": "Custom",
+            "aliases": [],
+            "auth": {
+                "kind": "api_key",
+                "fields": [{"name": "api_key", "label": "API key", "type": "password"}],
+                "header": {"name": "Authorization", "template": "Bearer {api_key}"},
+                "verify_operation": "list_items",
+            },
+            "operations": {
+                "list_items": {
+                    "method": "GET",
+                    "url": "https://api.example.com/items",
+                    "result_key": "items",
+                    "artifact": {"fields": ["name"]},
+                }
+            },
+        }
+
+        missing_header = json.loads(json.dumps(base))
+        del missing_header["auth"]["header"]
+        with self.assertRaisesRegex(ValueError, "header"):
+            validate_registry({"custom": missing_header})
+
+        visible_field = json.loads(json.dumps(base))
+        visible_field["auth"]["fields"][0]["type"] = "text"
+        with self.assertRaisesRegex(ValueError, "password"):
+            validate_registry({"custom": visible_field})
+
+        missing_label = json.loads(json.dumps(base))
+        del missing_label["auth"]["fields"][0]["label"]
+        with self.assertRaisesRegex(ValueError, "label"):
+            validate_registry({"custom": missing_label})
+
+        insecure_url = json.loads(json.dumps(base))
+        insecure_url["operations"]["list_items"]["url"] = "http://api.example.com/items"
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            validate_registry({"custom": insecure_url})
+
+        unknown_verification = json.loads(json.dumps(base))
+        unknown_verification["auth"]["verify_operation"] = "missing"
+        with self.assertRaisesRegex(ValueError, "verification"):
+            validate_registry({"custom": unknown_verification})
 
 
 class ConnectorRuntimeTests(unittest.TestCase):
@@ -78,6 +131,15 @@ class ConnectorRuntimeTests(unittest.TestCase):
                     }
                 ]
             }
+        if url == "https://api.openai.com/v1/models":
+            if headers.get("Authorization") != "Bearer user-openai-key":
+                raise OSError("invalid API key")
+            return {
+                "data": [
+                    {"id": "gpt-5-mini", "owned_by": "openai"},
+                    {"id": "gpt-4.1-mini", "owned_by": "system"},
+                ]
+            }
         raise AssertionError(f"unexpected request: {method} {url}")
 
     def runtime(self):
@@ -108,6 +170,73 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.assertEqual("needs_configuration", setup["status"])
         self.assertIn("GOOGLE_CLIENT_ID", setup["message"])
         self.assertNotIn("action_url", setup)
+
+    def test_api_key_start_returns_generic_secure_credential_form(self):
+        setup = self.runtime().start_connection(self.user_id, "openai")
+
+        self.assertEqual("credential_form", setup["type"])
+        self.assertEqual("openai_api", setup["connector_id"])
+        self.assertEqual("/api/connectors/setup", setup["submit_url"])
+        self.assertEqual(
+            [{"name": "api_key", "label": "OpenAI API key", "type": "password", "required": True}],
+            setup["fields"],
+        )
+        self.assertNotIn("user-openai-key", json.dumps(setup))
+
+    def test_api_key_finish_verifies_provider_and_encrypts_credentials(self):
+        runtime = self.runtime()
+
+        connection = runtime.finish_connection(
+            self.user_id, "openai_api", {"api_key": "user-openai-key"}
+        )
+
+        self.assertEqual({"connector_id": "openai_api", "status": "verified"}, connection)
+        self.assertEqual("Bearer user-openai-key", self.calls[0]["headers"]["Authorization"])
+        with closing(sqlite3.connect(self.db_path)) as database:
+            encrypted = database.execute(
+                "SELECT credentials FROM connections WHERE user_id = ? AND connector_id = ?",
+                (self.user_id, "openai_api"),
+            ).fetchone()[0]
+        self.assertNotIn("user-openai-key", encrypted)
+
+    def test_api_key_provider_failure_never_marks_connection_verified(self):
+        def failing_transport(method, url, headers, data, timeout):
+            raise OSError("provider rejected credential")
+
+        runtime = ConnectorRuntime(self.store, env=self.env, transport=failing_transport)
+
+        with self.assertRaisesRegex(ConnectorError, "verification failed"):
+            runtime.finish_connection(
+                self.user_id, "openai_api", {"api_key": "invalid-user-key"}
+            )
+
+        self.assertNotEqual("verified", self.store.connection_status(self.user_id, "openai_api"))
+        self.assertEqual({}, self.store.connection_credentials(self.user_id, "openai_api"))
+
+    def test_api_key_malformed_success_response_never_marks_connection_verified(self):
+        def malformed_transport(method, url, headers, data, timeout):
+            return {"error": "credential rejected"}
+
+        runtime = ConnectorRuntime(self.store, env=self.env, transport=malformed_transport)
+
+        with self.assertRaisesRegex(ConnectorError, "verification failed"):
+            runtime.finish_connection(
+                self.user_id, "openai_api", {"api_key": "invalid-user-key"}
+            )
+
+        self.assertNotEqual("verified", self.store.connection_status(self.user_id, "openai_api"))
+        self.assertEqual({}, self.store.connection_credentials(self.user_id, "openai_api"))
+
+    def test_api_key_operation_uses_declared_header_and_returns_artifact(self):
+        runtime = self.runtime()
+        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
+
+        artifact = runtime.call_operation(self.user_id, "openai_api", "list_models", {})
+
+        self.assertEqual("Available OpenAI models", artifact["title"])
+        self.assertEqual("openai_api", artifact["source"])
+        self.assertEqual(["gpt-5-mini", "openai"], artifact["rows"][0])
+        self.assertNotIn("user-openai-key", json.dumps(artifact))
 
     def test_finish_connection_exchanges_code_verifies_provider_and_encrypts_tokens(self):
         runtime = self.runtime()
