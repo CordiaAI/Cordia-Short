@@ -92,8 +92,11 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.assertEqual(
             ["http://127.0.0.1:5050/api/connectors/oauth/callback"], query["redirect_uri"]
         )
+        self.assertEqual(
+            ["https://www.googleapis.com/auth/drive.metadata.readonly"], query["scope"]
+        )
         self.assertEqual(["offline"], query["access_type"])
-        self.assertEqual(["true"], query["include_granted_scopes"])
+        self.assertEqual(["false"], query["include_granted_scopes"])
         self.assertTrue(query["state"][0])
         self.assertTrue(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
         self.assertFalse(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
