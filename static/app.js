@@ -68,9 +68,18 @@ function renderSetupCard(card) {
     container.innerHTML = "";
     return;
   }
-  const action = card.action_url
-    ? `<a href="${escapeHtml(card.action_url)}">Continue securely</a>`
-    : `<span class="status-pill">${escapeHtml(card.status)}</span>`;
+  const credentialFields = (card.fields || []).map((field) => `
+    <label>${escapeHtml(field.label)}
+      <input name="${escapeHtml(field.name)}" type="${escapeHtml(field.type)}" ${field.required ? "required" : ""} autocomplete="off">
+    </label>`).join("");
+  const action = card.type === "credential_form"
+    ? `<form class="credential-form" data-connector-form data-connector-id="${escapeHtml(card.connector_id)}" data-submit-url="${escapeHtml(card.submit_url)}">
+        ${credentialFields}
+        <button type="submit">Verify and connect</button>
+      </form>`
+    : card.action_url
+      ? `<a href="${escapeHtml(card.action_url)}">Continue securely</a>`
+      : `<span class="status-pill">${escapeHtml(card.status)}</span>`;
   container.innerHTML = `
     <div class="assistant-mark">C</div>
     <div class="setup-copy"><small>CONNECTOR SETUP</small><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(card.message)}</p></div>
@@ -212,6 +221,36 @@ byId("messages").addEventListener("click", async (event) => {
     const errorNotice = byId("notice");
     errorNotice.textContent = error.message;
     errorNotice.hidden = false;
+  }
+});
+
+byId("setup-card").addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-connector-form]");
+  if (!form) return;
+  event.preventDefault();
+  const credentials = Object.fromEntries(new FormData(form).entries());
+  const controls = form.querySelectorAll("input, button");
+  controls.forEach((control) => { control.disabled = true; });
+  const notice = byId("notice");
+  notice.textContent = "Verifying the connector directly with the provider…";
+  notice.hidden = false;
+  try {
+    const state = await api(form.dataset.submitUrl || "/api/connectors/setup", {
+      method: "POST",
+      body: JSON.stringify({ connector_id: form.dataset.connectorId, credentials }),
+    });
+    form.reset();
+    render(state);
+    const successNotice = byId("notice");
+    successNotice.textContent = "Connector verified. Ask Cordia to use it.";
+    successNotice.hidden = false;
+  } catch (error) {
+    render(error.payload || currentState);
+    const errorNotice = byId("notice");
+    errorNotice.textContent = error.message;
+    errorNotice.hidden = false;
+  } finally {
+    controls.forEach((control) => { control.disabled = false; });
   }
 });
 

@@ -277,6 +277,24 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertTrue(response.location.endswith("/?error=oauth_denied"))
         self.assertEqual([], self.runtime.finished)
 
+    def test_api_key_setup_is_authenticated_and_never_echoes_secret(self):
+        unauthorized = self.client.post(
+            "/api/connectors/setup",
+            json={"connector_id": "openai_api", "credentials": {"api_key": "user-secret"}},
+        )
+        self.assertEqual(401, unauthorized.status_code)
+
+        self.register()
+        response = self.client.post(
+            "/api/connectors/setup",
+            json={"connector_id": "openai_api", "credentials": {"api_key": "user-secret"}},
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("verified", response.json["connection"]["status"])
+        self.assertEqual("user-secret", self.runtime.finished[-1][2]["api_key"])
+        self.assertNotIn("user-secret", response.get_data(as_text=True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,10 @@ h1, h2, p { margin-top: 0; }
 .workspace-heading p { color: var(--muted); }
 .notice { padding: 13px 16px; background: #f3ead8; border: 1px solid #e5d5b7; border-radius: 14px; margin-bottom: 18px; }
 .setup-card, .memory-card, .artifact-window { background: rgba(255,255,252,.92); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 10px 32px rgba(40,48,34,.06); }
+.credential-form { display: grid; gap: 10px; min-width: min(320px, 100%); }
+.credential-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+.credential-form input { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px; background: var(--ivory); color: var(--ink); }
+.credential-form button { justify-self: start; }
 .setup-card { padding: 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 18px; }
 .setup-card[hidden] { display: none; }
 .setup-card .setup-copy { flex: 1; }

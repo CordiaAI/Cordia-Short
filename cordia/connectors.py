@@ -36,7 +36,38 @@ CONNECTORS = {
                 },
             }
         },
-    }
+    },
+    "openai_api": {
+        "id": "openai_api",
+        "name": "OpenAI API",
+        "aliases": ["openai", "openai api", "chatgpt api"],
+        "auth": {
+            "kind": "api_key",
+            "fields": [
+                {
+                    "name": "api_key",
+                    "label": "OpenAI API key",
+                    "type": "password",
+                    "required": True,
+                }
+            ],
+            "header": {"name": "Authorization", "template": "Bearer {api_key}"},
+            "verify_operation": "list_models",
+        },
+        "operations": {
+            "list_models": {
+                "method": "GET",
+                "url": "https://api.openai.com/v1/models",
+                "result_key": "data",
+                "artifact": {
+                    "type": "table",
+                    "title": "Available OpenAI models",
+                    "columns": ["Model", "Owner"],
+                    "fields": ["id", "owned_by"],
+                },
+            }
+        },
+    },
 }
 
 
@@ -58,9 +89,37 @@ def validate_registry(registry: dict | None = None) -> None:
         for operation_id, operation in operations.items():
             if operation.get("method") not in {"GET", "POST"} or not operation.get("url"):
                 raise ValueError(f"{connector_id}.{operation_id}: method and url are required")
+            if not operation["url"].startswith("https://"):
+                raise ValueError(f"{connector_id}.{operation_id}: provider url must use HTTPS")
             artifact = operation.get("artifact")
             if not isinstance(artifact, dict) or not artifact.get("fields"):
                 raise ValueError(f"{connector_id}.{operation_id}: artifact mapping is required")
+        if auth["kind"] == "api_key":
+            fields = auth.get("fields")
+            header = auth.get("header")
+            verify_operation = auth.get("verify_operation")
+            if not isinstance(fields, list) or not fields:
+                raise ValueError(f"{connector_id}: API key fields are required")
+            if any(
+                not isinstance(field, dict)
+                or not field.get("name")
+                or not field.get("label")
+                for field in fields
+            ):
+                raise ValueError(f"{connector_id}: each API key field needs a name and label")
+            if any(field.get("type") != "password" for field in fields):
+                raise ValueError(f"{connector_id}: API key fields must use password inputs")
+            field_names = {field["name"] for field in fields}
+            if len(field_names) != len(fields):
+                raise ValueError(f"{connector_id}: API key field names must be unique")
+            if not isinstance(header, dict) or not header.get("name") or not header.get("template"):
+                raise ValueError(f"{connector_id}: API key header is required")
+            try:
+                header["template"].format(**{name: "credential" for name in field_names})
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"{connector_id}: API key header references an unknown field") from exc
+            if verify_operation not in operations:
+                raise ValueError(f"{connector_id}: API key verification operation is required")
 
 
 def _normalize(value: str) -> str:
@@ -74,6 +133,16 @@ def resolve_connector(value: str) -> dict | None:
         if wanted in {_normalize(name) for name in names}:
             return connector
     return None
+
+
+def agent_catalog() -> str:
+    lines = ["Supported connector catalog:"]
+    for connector in CONNECTORS.values():
+        operations = ", ".join(connector["operations"])
+        lines.append(
+            f"- {connector['id']}: {connector['name']} | auth={connector['auth']['kind']} | operations={operations}"
+        )
+    return "\n".join(lines)
 
 
 validate_registry()

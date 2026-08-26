@@ -56,6 +56,16 @@ class ConnectorRuntime:
     def start_connection(self, user_id: int, connector_id: str) -> dict:
         connector = self._connector(connector_id)
         auth = connector["auth"]
+        if auth["kind"] == "api_key":
+            return {
+                "type": "credential_form",
+                "connector_id": connector["id"],
+                "title": f"Connect {connector['name']}",
+                "status": "ready",
+                "message": "Enter the credential below. Cordia verifies it directly with the provider and never sends it to the agent.",
+                "submit_url": "/api/connectors/setup",
+                "fields": [dict(field) for field in auth["fields"]],
+            }
         if auth["kind"] != "oauth2":
             raise ConnectorError(f"auth protocol is not implemented: {auth['kind']}")
         required = [auth["client_id_env"], auth["client_secret_env"]]
@@ -92,6 +102,14 @@ class ConnectorRuntime:
 
     def finish_connection(self, user_id: int, connector_id: str, setup_result: dict) -> dict:
         connector = self._connector(connector_id)
+        auth_kind = connector["auth"]["kind"]
+        if auth_kind == "api_key":
+            return self._finish_api_key(user_id, connector, setup_result)
+        if auth_kind != "oauth2":
+            raise ConnectorError(f"auth protocol is not implemented: {auth_kind}")
+        return self._finish_oauth2(user_id, connector, setup_result)
+
+    def _finish_oauth2(self, user_id: int, connector: dict, setup_result: dict) -> dict:
         state = str(setup_result.get("state", ""))
         code = str(setup_result.get("code", ""))
         if not state or not code or not self.store.consume_oauth_state(user_id, connector["id"], state):
@@ -130,11 +148,31 @@ class ConnectorRuntime:
             raise
         return {"connector_id": connector["id"], "status": "verified"}
 
+    def _finish_api_key(self, user_id: int, connector: dict, setup_result: dict) -> dict:
+        fields = connector["auth"]["fields"]
+        credentials = {}
+        for field in fields:
+            value = str(setup_result.get(field["name"], "")).strip()
+            if field.get("required") and not value:
+                raise ConnectorError(f"{field['label']} is required")
+            if value:
+                credentials[field["name"]] = value
+        self.store.save_connection(user_id, connector["id"], "pending_verification", credentials)
+        try:
+            self.verify_connection(user_id, connector["id"])
+        except ConnectorError:
+            self.store.save_connection(user_id, connector["id"], "needs_attention", {})
+            raise
+        return {"connector_id": connector["id"], "status": "verified"}
+
     def verify_connection(self, user_id: int, connector_id: str) -> dict:
         connector = self._connector(connector_id)
-        operation_id = next(iter(connector["operations"]))
+        operation_id = connector["auth"].get("verify_operation") or next(iter(connector["operations"]))
+        operation = connector["operations"][operation_id]
         try:
-            self._execute(user_id, connector, connector["operations"][operation_id])
+            result = self._execute(user_id, connector, operation)
+            if not isinstance(result.get(operation["result_key"]), list):
+                raise ConnectorError("provider result does not match the declared operation")
         except Exception as exc:
             raise ConnectorError("connector verification failed") from exc
         self.store.save_connection(user_id, connector["id"], "verified")
@@ -171,7 +209,7 @@ class ConnectorRuntime:
             return self.transport(
                 operation["method"],
                 url,
-                {"Authorization": f"Bearer {credentials['access_token']}"},
+                self._authorization_headers(connector, credentials),
                 None,
                 30,
             )
@@ -180,7 +218,11 @@ class ConnectorRuntime:
 
     def _fresh_credentials(self, user_id: int, connector: dict) -> dict:
         credentials = self.store.connection_credentials(user_id, connector["id"])
-        if not credentials or not credentials.get("access_token"):
+        if not credentials:
+            raise ConnectorError("connector credentials are missing")
+        if connector["auth"]["kind"] == "api_key":
+            return credentials
+        if not credentials.get("access_token"):
             raise ConnectorError("connector credentials are missing")
         if "expires_at" not in credentials:
             return credentials
@@ -224,3 +266,16 @@ class ConnectorRuntime:
         }
         self.store.save_connection(user_id, connector["id"], "verified", refreshed)
         return refreshed
+
+    @staticmethod
+    def _authorization_headers(connector: dict, credentials: dict) -> dict:
+        auth = connector["auth"]
+        if auth["kind"] == "oauth2":
+            return {"Authorization": f"Bearer {credentials['access_token']}"}
+        if auth["kind"] == "api_key":
+            try:
+                value = auth["header"]["template"].format(**credentials)
+            except KeyError as exc:
+                raise ConnectorError("connector credentials are incomplete") from exc
+            return {auth["header"]["name"]: value}
+        raise ConnectorError(f"auth protocol is not implemented: {auth['kind']}")
