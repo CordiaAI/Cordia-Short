@@ -93,6 +93,7 @@ class ConnectorRuntimeTests(unittest.TestCase):
             ["http://127.0.0.1:5050/api/connectors/oauth/callback"], query["redirect_uri"]
         )
         self.assertEqual(["offline"], query["access_type"])
+        self.assertEqual(["true"], query["include_granted_scopes"])
         self.assertTrue(query["state"][0])
         self.assertTrue(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
         self.assertFalse(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
@@ -174,6 +175,52 @@ class ConnectorRuntimeTests(unittest.TestCase):
                 self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
             )
         self.assertNotEqual("verified", self.store.connection_status(self.user_id, "google_drive"))
+
+    def test_expired_access_token_is_refreshed_before_provider_operation(self):
+        calls = []
+
+        def refresh_transport(method, url, headers, data, timeout):
+            calls.append({"method": method, "url": url, "headers": headers, "data": data})
+            if url == "https://oauth2.googleapis.com/token":
+                self.assertEqual("refresh_token", data["grant_type"])
+                self.assertEqual("provider-refresh-token", data["refresh_token"])
+                return {
+                    "access_token": "new-access-token",
+                    "expires_in": 3600,
+                    "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
+                    "token_type": "Bearer",
+                }
+            if url.startswith("https://www.googleapis.com/drive/v3/files"):
+                self.assertEqual("Bearer new-access-token", headers["Authorization"])
+                return {"files": []}
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        self.store.save_connection(
+            self.user_id,
+            "google_drive",
+            "verified",
+            {
+                "access_token": "expired-access-token",
+                "refresh_token": "provider-refresh-token",
+                "expires_at": 0,
+                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
+                "token_type": "Bearer",
+            },
+        )
+        runtime = ConnectorRuntime(self.store, env=self.env, transport=refresh_transport)
+
+        artifact = runtime.call_operation(
+            self.user_id, "google_drive", "list_recent_files", {}
+        )
+
+        self.assertEqual([], artifact["rows"])
+        self.assertEqual("new-access-token", self.store.connection_credentials(
+            self.user_id, "google_drive"
+        )["access_token"])
+        self.assertEqual("provider-refresh-token", self.store.connection_credentials(
+            self.user_id, "google_drive"
+        )["refresh_token"])
+        self.assertEqual(2, len(calls))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from app import create_app
+from cordia.workspace_mcp import WorkspaceMCPError
 
 
 class FakeAgent:
@@ -62,11 +63,48 @@ class FakeRuntime:
         return {"connector_id": connector_id, "status": "verified"}
 
 
+class RecordingWorkspaceClient:
+    def __init__(self):
+        self.calls = []
+        self.store = None
+        self.fail_tool = None
+
+    def call(self, user_id, tool_name, arguments):
+        self.calls.append((user_id, tool_name, arguments))
+        if tool_name == self.fail_tool:
+            raise WorkspaceMCPError("provider operation failed")
+        if tool_name == "connector_start":
+            return {
+                "type": "oauth_redirect",
+                "connector_id": arguments["connector_id"],
+                "title": "Connect Google Drive",
+                "status": "ready",
+                "message": "Continue securely.",
+                "action_url": "https://accounts.google.com/example",
+            }
+        if tool_name == "connector_call":
+            return {
+                "artifact": {
+                    "type": "table",
+                    "title": "Recent Google Drive files",
+                    "columns": ["Name"],
+                    "rows": [["Plan.md"]],
+                    "source": arguments["connector_id"],
+                }
+            }
+        if tool_name == "artifact_create":
+            artifact = arguments["payload"]
+            artifact_id = self.store.save_artifact(user_id, artifact)
+            return {"artifact": {**artifact, "id": artifact_id}}
+        raise AssertionError(f"unexpected workspace tool: {tool_name}")
+
+
 class ApplicationJourneyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.runtime = FakeRuntime()
+        self.workspace = RecordingWorkspaceClient()
         self.agent = FakeAgent()
         self.app = create_app(
             {
@@ -77,7 +115,9 @@ class ApplicationJourneyTests(unittest.TestCase):
             },
             agent=self.agent,
             connector_runtime=self.runtime,
+            workspace_client=self.workspace,
         )
+        self.workspace.store = self.app.extensions["cordia_store"]
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -124,6 +164,10 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("workspace", response.json["state"])
         refreshed = self.client.get("/api/state").json
         self.assertEqual("oauth_redirect", refreshed["setup_card"]["type"])
+        self.assertEqual(
+            [(1, "connector_start", {"connector_id": "google_drive"})],
+            self.workspace.calls,
+        )
 
     def test_adjusting_response_updates_operator_and_retries_the_original_request(self):
         self.register()
@@ -185,6 +229,21 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("Plan.md", response.json["artifact"]["rows"][0][0])
         state = self.client.get("/api/state").json
         self.assertEqual("Plan.md", state["artifacts"][0]["rows"][0][0])
+        self.assertEqual(
+            ["connector_call", "artifact_create"],
+            [call[1] for call in self.workspace.calls],
+        )
+
+    def test_workspace_tool_failure_is_explicit_and_creates_no_artifact(self):
+        self.register()
+        self.complete_survey()
+        self.workspace.fail_tool = "connector_call"
+
+        response = self.client.post("/api/chat", json={"message": "Show my recent files"})
+
+        self.assertEqual(502, response.status_code)
+        self.assertIn("provider operation failed", response.json["error"])
+        self.assertEqual([], response.json["artifacts"])
 
     def test_signout_ends_session(self):
         self.register()

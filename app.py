@@ -8,6 +8,7 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 from cordia.agent import Agent, AgentUnavailable, InvalidAgentAction
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
 from cordia.store import SURVEY_FIELDS, Store
+from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,7 +43,12 @@ def load_local_env(path: Path) -> None:
         os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
 
 
-def create_app(config: dict | None = None, agent=None, connector_runtime=None) -> Flask:
+def create_app(
+    config: dict | None = None,
+    agent=None,
+    connector_runtime=None,
+    workspace_client=None,
+) -> Flask:
     load_local_env(ROOT / ".env.local")
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.config.update(
@@ -58,9 +64,11 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         os.getenv("OPENAI_API_KEY", ""), os.getenv("OPENAI_MODEL", "gpt-5-mini")
     )
     runtime = connector_runtime or ConnectorRuntime(store)
+    workspace = workspace_client or WorkspaceMCPClient(runtime, store)
     app.extensions["cordia_store"] = store
     app.extensions["cordia_agent"] = cordia_agent
     app.extensions["connector_runtime"] = runtime
+    app.extensions["workspace_mcp_client"] = workspace
 
     def current_user() -> int | None:
         return store.user_for_session(request.cookies.get(SESSION_COOKIE))
@@ -91,6 +99,33 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             "artifacts": store.artifacts(user_id),
             "setup_card": store.setup_card(user_id),
         }
+
+    def execute_workspace_action(user_id: int, action: dict) -> tuple[dict | None, dict | None]:
+        setup_card = None
+        artifact = None
+        if action["action"] == "propose_connector":
+            setup_card = workspace.call(
+                user_id,
+                "connector_start",
+                {"connector_id": action["connector_id"]},
+            )
+            store.save_setup_card(user_id, setup_card)
+        elif action["action"] == "run_operation":
+            operation = workspace.call(
+                user_id,
+                "connector_call",
+                {
+                    "connector_id": action["connector_id"],
+                    "operation_id": action["operation_id"],
+                    "inputs": {},
+                },
+            )
+            artifact = workspace.call(
+                user_id,
+                "artifact_create",
+                {"payload": operation["artifact"]},
+            )["artifact"]
+        return setup_card, artifact
 
     @app.errorhandler(PermissionError)
     def permission_error(exc):
@@ -184,17 +219,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         store.add_message(user_id, "user", message)
         try:
             action = cordia_agent.respond(store.operator_markdown(user_id), store.messages(user_id))
-            setup_card = None
-            artifact = None
-            if action["action"] == "propose_connector":
-                setup_card = runtime.start_connection(user_id, action["connector_id"])
-                store.save_setup_card(user_id, setup_card)
-            elif action["action"] == "run_operation":
-                artifact = runtime.call_operation(
-                    user_id, action["connector_id"], action["operation_id"], {}
-                )
-                artifact_id = store.save_artifact(user_id, artifact)
-                artifact = {**artifact, "id": artifact_id}
+            setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
             return jsonify(
                 {
@@ -213,6 +238,10 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             message = f"Cordia could not complete that request: {exc}"
             store.add_message(user_id, "assistant", message)
             return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 422
+        except WorkspaceMCPError as exc:
+            message = f"Cordia could not complete that workspace action: {exc}"
+            store.add_message(user_id, "assistant", message)
+            return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 502
 
     @app.post("/api/responses/<int:response_id>/adjust")
     def adjust_response(response_id: int):
@@ -227,17 +256,7 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
             retry_messages = store.messages_before_response(user_id, response_id)
             adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
             action = cordia_agent.respond(store.operator_markdown(user_id), retry_messages)
-            setup_card = None
-            artifact = None
-            if action["action"] == "propose_connector":
-                setup_card = runtime.start_connection(user_id, action["connector_id"])
-                store.save_setup_card(user_id, setup_card)
-            elif action["action"] == "run_operation":
-                artifact = runtime.call_operation(
-                    user_id, action["connector_id"], action["operation_id"], {}
-                )
-                artifact_id = store.save_artifact(user_id, artifact)
-                artifact = {**artifact, "id": artifact_id}
+            setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
             return jsonify(
                 {
@@ -257,6 +276,9 @@ def create_app(config: dict | None = None, agent=None, connector_runtime=None) -
         except (InvalidAgentAction, ConnectorError) as exc:
             message = f"Your preference was saved, but Cordia could not revise the response: {exc}"
             return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 422
+        except WorkspaceMCPError as exc:
+            message = f"Your preference was saved, but the workspace action failed: {exc}"
+            return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 502
 
     @app.get("/api/connectors/oauth/callback")
     def oauth_callback():
