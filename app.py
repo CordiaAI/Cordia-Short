@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlencode
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from cordia.agent import Agent, AgentUnavailable, InvalidAgentAction
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
+from cordia.connectors import resolve_connector
 from cordia.store import SURVEY_FIELDS, Store
 from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
@@ -117,6 +119,20 @@ def create_app(
             return cordia_agent
         return make_agent(provider["credential"], provider["model"])
 
+    def create_operation_artifact(
+        user_id: int, connector_id: str, operation_id: str
+    ) -> dict:
+        operation = workspace.call(
+            user_id,
+            "connector_call",
+            {"connector_id": connector_id, "operation_id": operation_id, "inputs": {}},
+        )
+        return workspace.call(
+            user_id,
+            "artifact_create",
+            {"payload": operation["artifact"]},
+        )["artifact"]
+
     def execute_workspace_action(user_id: int, action: dict) -> tuple[dict | None, dict | None]:
         setup_card = None
         artifact = None
@@ -128,21 +144,41 @@ def create_app(
             )
             store.save_setup_card(user_id, setup_card)
         elif action["action"] == "run_operation":
-            operation = workspace.call(
-                user_id,
-                "connector_call",
-                {
-                    "connector_id": action["connector_id"],
-                    "operation_id": action["operation_id"],
-                    "inputs": {},
-                },
+            artifact = create_operation_artifact(
+                user_id, action["connector_id"], action["operation_id"]
             )
-            artifact = workspace.call(
-                user_id,
-                "artifact_create",
-                {"payload": operation["artifact"]},
-            )["artifact"]
         return setup_card, artifact
+
+    def continue_after_connection(user_id: int, connector_id: str) -> dict:
+        connector = resolve_connector(connector_id)
+        if not connector:
+            return {"status": "not_configured", "artifact": None}
+        operation_id = connector.get("post_connect_operation")
+        if not operation_id:
+            store.add_message(
+                user_id,
+                "assistant",
+                f"{connector['name']} is connected and ready.",
+                kind="agent",
+            )
+            return {"status": "not_configured", "artifact": None}
+        try:
+            artifact = create_operation_artifact(user_id, connector_id, operation_id)
+        except WorkspaceMCPError:
+            store.add_message(
+                user_id,
+                "assistant",
+                f"{connector['name']} is connected, but its first workspace view could not be loaded yet.",
+                kind="agent",
+            )
+            return {"status": "failed", "artifact": None}
+        store.add_message(
+            user_id,
+            "assistant",
+            f"{connector['name']} is connected and ready. I updated your workspace automatically.",
+            kind="agent",
+        )
+        return {"status": "updated", "artifact": artifact}
 
     @app.errorhandler(PermissionError)
     def permission_error(exc):
@@ -321,7 +357,11 @@ def create_app(
         except ConnectorError:
             return redirect("/?error=connector_verification_failed")
         store.clear_setup_card(user_id)
-        return redirect(f"/?connected={connector_id}")
+        workspace_update = continue_after_connection(user_id, connector_id)
+        query = urlencode(
+            {"connected": connector_id, "workspace_update": workspace_update["status"]}
+        )
+        return redirect(f"/?{query}")
 
     @app.post("/api/connectors/setup")
     def connector_setup():
@@ -336,7 +376,16 @@ def create_app(
         except ConnectorError as exc:
             return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
         store.clear_setup_card(user_id)
-        return jsonify({"ok": True, "connection": connection, **state_payload(user_id)})
+        workspace_update = continue_after_connection(user_id, connector_id)
+        return jsonify(
+            {
+                "ok": True,
+                "connection": connection,
+                "workspace_update": workspace_update,
+                "artifact": workspace_update["artifact"],
+                **state_payload(user_id),
+            }
+        )
 
     @app.post("/api/connectors/select")
     def connector_select():

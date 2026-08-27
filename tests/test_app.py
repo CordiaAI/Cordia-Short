@@ -111,6 +111,7 @@ class RecordingWorkspaceClient:
                     "columns": ["Name"],
                     "rows": [["Plan.md"]],
                     "source": arguments["connector_id"],
+                    "operation_id": arguments["operation_id"],
                 }
             }
         if tool_name == "artifact_create":
@@ -292,8 +293,20 @@ class ApplicationJourneyTests(unittest.TestCase):
         )
 
         self.assertEqual(302, response.status_code)
-        self.assertTrue(response.location.endswith("/?connected=google_drive"))
+        self.assertTrue(
+            response.location.endswith(
+                "/?connected=google_drive&workspace_update=updated"
+            )
+        )
         self.assertEqual("google_drive", self.runtime.finished[0][1])
+        state = self.client.get("/api/state").json
+        self.assertEqual(1, len(state["artifacts"]))
+        self.assertEqual("Plan.md", state["artifacts"][0]["rows"][0][0])
+        self.assertEqual(
+            ["connector_call", "artifact_create"],
+            [call[1] for call in self.workspace.calls[-2:]],
+        )
+        self.assertIn("Google Drive is connected", state["messages"][-1]["content"])
 
     def test_oauth_denial_does_not_attempt_token_exchange(self):
         self.register()
@@ -326,6 +339,36 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("verified", response.json["connection"]["status"])
         self.assertEqual("user-secret", self.runtime.finished[-1][2]["api_key"])
         self.assertNotIn("user-secret", response.get_data(as_text=True))
+
+    def test_api_key_setup_reports_failed_initial_workspace_update_truthfully(self):
+        self.register()
+        self.workspace.fail_tool = "connector_call"
+
+        response = self.client.post(
+            "/api/connectors/setup",
+            json={"connector_id": "openai_api", "credentials": {"api_key": "user-secret"}},
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json["ok"])
+        self.assertEqual("verified", response.json["connection"]["status"])
+        self.assertEqual("failed", response.json["workspace_update"]["status"])
+        self.assertIsNone(response.json["workspace_update"]["artifact"])
+        self.assertIn("could not be loaded", response.json["messages"][-1]["content"])
+
+    def test_oauth_callback_reports_failed_initial_workspace_update_truthfully(self):
+        self.register()
+        store = self.app.extensions["cordia_store"]
+        state = store.create_oauth_state(1, "google_drive")
+        self.workspace.fail_tool = "connector_call"
+
+        response = self.client.get(
+            "/api/connectors/oauth/callback", query_string={"state": state, "code": "code"}
+        )
+
+        self.assertEqual(302, response.status_code)
+        self.assertIn("connected=google_drive", response.location)
+        self.assertIn("workspace_update=failed", response.location)
 
     def test_model_button_selection_changes_the_agent_used_for_next_message(self):
         unauthorized = self.client.post(

@@ -36,6 +36,7 @@ CONNECTORS = {
                 },
             }
         },
+        "post_connect_operation": "list_recent_files",
     },
     "openai_api": {
         "id": "openai_api",
@@ -78,6 +79,7 @@ CONNECTORS = {
                 },
             }
         },
+        "post_connect_operation": "list_models",
     },
 }
 
@@ -105,6 +107,9 @@ def validate_registry(registry: dict | None = None) -> None:
             artifact = operation.get("artifact")
             if not isinstance(artifact, dict) or not artifact.get("fields"):
                 raise ValueError(f"{connector_id}.{operation_id}: artifact mapping is required")
+        post_connect_operation = connector.get("post_connect_operation")
+        if post_connect_operation and post_connect_operation not in operations:
+            raise ValueError(f"{connector_id}: post-connect operation must be declared")
         if auth["kind"] == "api_key":
             fields = auth.get("fields")
             header = auth.get("header")

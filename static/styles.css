@@ -36,6 +36,26 @@ button { cursor: pointer; }
 .message { max-width: 92%; padding: 12px 14px; border-radius: 16px; line-height: 1.45; white-space: pre-wrap; }
 .message.user { margin-left: auto; background: var(--olive); color: white; border-bottom-right-radius: 5px; }
 .message.assistant { background: var(--sand); border-bottom-left-radius: 5px; }
+.cordia-pending { margin-top: -8px; }
+.cordia-working {
+  width: fit-content;
+  padding: 0 8px;
+  color: transparent;
+  font: 32px/1 Georgia, serif;
+  background: linear-gradient(105deg, var(--olive) 18%, #dce5d4 43%, #fff 50%, #dce5d4 57%, var(--olive) 82%);
+  background-size: 240% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  filter: drop-shadow(0 0 7px rgba(145,161,132,.32));
+  animation: cordia-shine 1.35s linear infinite;
+}
+@keyframes cordia-shine {
+  from { background-position: 130% 0; }
+  to { background-position: -110% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cordia-working { animation: none; color: var(--olive); }
+}
 .message-actions { display: flex; gap: 4px; margin: 5px 0 0 5px; }
 .message-actions button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 4px 7px; border-radius: 8px; }
 .message-actions button:hover { background: #ecefe7; color: var(--olive); }

@@ -27,6 +27,17 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("data-model-select", javascript)
         self.assertIn('type="${escapeHtml(field.type)}"', javascript)
 
+    def test_chat_renders_pending_work_and_enter_submits(self):
+        javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function renderPendingMessage", javascript)
+        self.assertIn('class="cordia-working"', javascript)
+        self.assertIn("composer.requestSubmit()", javascript)
+        self.assertIn("event.shiftKey", javascript)
+        self.assertIn("event.isComposing", javascript)
+        self.assertIn("@keyframes cordia-shine", css)
+
     def test_visual_tokens_match_cordia_identity(self):
         css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         self.assertIn("--ivory", css)

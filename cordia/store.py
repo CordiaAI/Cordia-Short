@@ -478,12 +478,31 @@ class Store:
         return messages
 
     def save_artifact(self, user_id: int, artifact: dict) -> int:
+        slot = self._artifact_slot(artifact)
         with self._connection() as connection:
+            if slot:
+                rows = connection.execute(
+                    "SELECT id, payload FROM artifacts WHERE user_id = ? ORDER BY id DESC",
+                    (user_id,),
+                ).fetchall()
+                for row in rows:
+                    if self._artifact_slot(json.loads(row["payload"])) == slot:
+                        connection.execute(
+                            "UPDATE artifacts SET payload = ?, created_at = ? WHERE id = ?",
+                            (json.dumps(artifact), self._now().isoformat(), row["id"]),
+                        )
+                        return int(row["id"])
             cursor = connection.execute(
                 "INSERT INTO artifacts(user_id, payload, created_at) VALUES (?, ?, ?)",
                 (user_id, json.dumps(artifact), self._now().isoformat()),
             )
             return int(cursor.lastrowid)
+
+    @staticmethod
+    def _artifact_slot(artifact: dict) -> str | None:
+        source = str(artifact.get("source", "")).strip()
+        operation_id = str(artifact.get("operation_id", "")).strip()
+        return f"{source}:{operation_id}" if source and operation_id else None
 
     def artifacts(self, user_id: int) -> list[dict]:
         with self._connection() as connection:
@@ -492,8 +511,14 @@ class Store:
                 (user_id,),
             ).fetchall()
         artifacts = []
+        visible_slots = set()
         for row in rows:
             artifact = json.loads(row["payload"])
+            slot = self._artifact_slot(artifact)
+            if slot and slot in visible_slots:
+                continue
+            if slot:
+                visible_slots.add(slot)
             artifact.update({"id": int(row["id"]), "created_at": row["created_at"]})
             artifacts.append(artifact)
         return artifacts

@@ -28,6 +28,13 @@ class ConnectorRegistryTests(unittest.TestCase):
         self.assertEqual("api_key", connector["auth"]["kind"])
         self.assertEqual(["list_models"], list(connector["operations"]))
 
+    def test_connectors_may_declare_a_valid_post_connect_operation(self):
+        validate_registry()
+        self.assertEqual(
+            "list_recent_files", CONNECTORS["google_drive"]["post_connect_operation"]
+        )
+        self.assertEqual("list_models", CONNECTORS["openai_api"]["post_connect_operation"])
+
     def test_malformed_record_is_rejected(self):
         malformed = {
             "broken": {

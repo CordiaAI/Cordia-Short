@@ -159,6 +159,33 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertEqual(artifact_id, artifacts[0]["id"])
         self.assertEqual("Plan.md", artifacts[0]["rows"][0][0])
 
+    def test_repeated_connector_operation_updates_one_artifact_window(self):
+        user_id = self.store.register("person@example.com", "correct horse battery")
+        first = {
+            "type": "table",
+            "title": "Recent files",
+            "columns": ["Name"],
+            "rows": [["First.md"]],
+            "source": "google_drive",
+            "operation_id": "list_recent_files",
+        }
+        updated = {**first, "rows": [["Updated.md"]]}
+
+        first_id = self.store.save_artifact(user_id, first)
+        updated_id = self.store.save_artifact(user_id, updated)
+
+        artifacts = self.store.artifacts(user_id)
+        self.assertEqual(first_id, updated_id)
+        self.assertEqual(1, len(artifacts))
+        self.assertEqual("Updated.md", artifacts[0]["rows"][0][0])
+
+        second_id = self.store.save_artifact(
+            user_id,
+            {**first, "title": "Search results", "operation_id": "search_files"},
+        )
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(2, len(self.store.artifacts(user_id)))
+
 
 class ScriptedConnectorAgent:
     def respond(self, memory, messages):
