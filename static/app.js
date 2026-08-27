@@ -127,7 +127,14 @@ function render(state, transient = {}) {
   byId("auth-panel").hidden = !signedOut;
   byId("app-shell").hidden = signedOut;
   byId("signout-button").hidden = signedOut;
-  byId("status-pill").textContent = signedOut ? "Signed out" : state.state === "survey" ? "Surveyor" : "Agent online";
+  const agentRuntime = state.agent_runtime;
+  byId("status-pill").textContent = signedOut
+    ? "Signed out"
+    : state.state === "survey"
+      ? "Surveyor"
+      : agentRuntime
+        ? `Agent online · ${agentRuntime.provider} · ${agentRuntime.model}`
+        : "Agent online";
   if (signedOut) return;
 
   renderMessages(state.messages, state.state === "workspace");

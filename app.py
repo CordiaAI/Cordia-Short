@@ -65,6 +65,11 @@ def create_app(
         os.getenv("OPENAI_API_KEY", ""), os.getenv("OPENAI_MODEL", "gpt-5-mini")
     )
     make_agent = agent_factory or Agent
+    default_agent_runtime = {
+        "provider": "Cordia",
+        "model": getattr(cordia_agent, "model", "default"),
+        "source": "server",
+    }
     runtime = connector_runtime or ConnectorRuntime(store)
     workspace = workspace_client or WorkspaceMCPClient(runtime, store)
     app.extensions["cordia_store"] = store
@@ -103,6 +108,7 @@ def create_app(
                 for artifact in store.artifacts(user_id)
             ],
             "setup_card": store.setup_card(user_id),
+            "agent_runtime": runtime.agent_runtime(user_id) or default_agent_runtime,
         }
 
     def active_agent(user_id: int):
