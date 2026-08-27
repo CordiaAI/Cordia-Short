@@ -277,6 +277,10 @@ class ConnectorRuntimeTests(unittest.TestCase):
             {"credential": "user-openai-key", "model": "gpt-5-mini"},
             runtime.agent_provider(self.user_id),
         )
+        self.assertEqual(
+            {"provider": "OpenAI API", "model": "gpt-5-mini", "source": "connector"},
+            runtime.agent_runtime(self.user_id),
+        )
         self.assertNotIn("user-openai-key", json.dumps(decorated))
 
     def test_declared_selector_rejects_unknown_model_without_changing_selection(self):

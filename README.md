@@ -23,6 +23,7 @@ Sign in -> Surveyor -> operator.md -> same Cordia Agent conversation
 - Google Drive completed real OAuth on `beta.cordiacode.com` with only `drive.metadata.readonly`; a real `files.list` response produced a persisted DashView table artifact.
 - The same runtime now supports declarative API-key connectors. The secure setup form posts credentials directly to the backend, verifies them against the declared provider endpoint, encrypts successful credentials, and discards rejected credentials.
 - `openai_api` is the first API-key catalog proof and exposes the read-only `list_models` operation. A verified user can select a provider-returned model from its artifact; Cordia revalidates the choice before saving it and uses that user's encrypted key and selected model for later agent turns.
+- The workspace status identifies the active provider and model from sanitized runtime state, so users can see whether Cordia is using the managed default or their selected connector without exposing credentials.
 - The automated suite contains 57 passing tests at this commit.
 
 ## Run locally

@@ -265,6 +265,24 @@ class ConnectorRuntime:
         }
 
     def agent_provider(self, user_id: int) -> dict | None:
+        selection = self._agent_selection(user_id)
+        if not selection:
+            return None
+        connector, selector, model = selection
+        credentials = self.store.connection_credentials(user_id, connector["id"])
+        credential = (credentials or {}).get(selector["credential_field"])
+        if credential:
+            return {"credential": credential, "model": model}
+        return None
+
+    def agent_runtime(self, user_id: int) -> dict | None:
+        selection = self._agent_selection(user_id)
+        if not selection:
+            return None
+        connector, _selector, model = selection
+        return {"provider": connector["name"], "model": model, "source": "connector"}
+
+    def _agent_selection(self, user_id: int) -> tuple[dict, dict, str] | None:
         active_connector_id = self.store.connection_setting(
             user_id, "__runtime__", "agent_model"
         )
@@ -282,10 +300,8 @@ class ConnectorRuntime:
             model = self.store.connection_setting(
                 user_id, connector["id"], selector["setting"]
             )
-            credentials = self.store.connection_credentials(user_id, connector["id"])
-            credential = (credentials or {}).get(selector["credential_field"])
-            if model and credential:
-                return {"credential": credential, "model": model}
+            if model:
+                return connector, selector, model
         return None
 
     @staticmethod

@@ -9,6 +9,7 @@ from cordia.workspace_mcp import WorkspaceMCPError
 class FakeAgent:
     def __init__(self):
         self.calls = []
+        self.model = "server-default"
 
     def respond(self, memory, messages):
         self.calls.append((memory, list(messages)))
@@ -69,6 +70,15 @@ class FakeRuntime:
 
     def agent_provider(self, user_id):
         return self.provider
+
+    def agent_runtime(self, user_id):
+        if not self.provider:
+            return None
+        return {
+            "provider": "OpenAI API",
+            "model": self.provider["model"],
+            "source": "connector",
+        }
 
     def decorate_artifact(self, user_id, artifact):
         return artifact
@@ -175,6 +185,10 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("workspace", state["state"])
         self.assertIn("Google Drive, Slack", state["operator"])
         self.assertGreaterEqual(len(state["messages"]), 10)
+        self.assertEqual(
+            {"provider": "Cordia", "model": "server-default", "source": "server"},
+            state["agent_runtime"],
+        )
 
         response = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
         self.assertEqual(200, response.status_code)
@@ -328,6 +342,10 @@ class ApplicationJourneyTests(unittest.TestCase):
 
         self.assertEqual(200, selected.status_code)
         self.assertEqual("gpt-5-mini", selected.json["selection"]["value"])
+        self.assertEqual(
+            {"provider": "OpenAI API", "model": "gpt-5-mini", "source": "connector"},
+            selected.json["agent_runtime"],
+        )
         self.assertNotIn("user-secret", selected.get_data(as_text=True))
 
         self.complete_survey()
