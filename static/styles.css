@@ -76,6 +76,9 @@ h1, h2, p { margin-top: 0; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 12px 15px; border-bottom: 1px solid var(--line); font-size: 14px; }
 th { color: var(--muted); font-weight: 600; background: #fafaf6; position: sticky; top: 0; }
+.model-select { white-space: nowrap; padding: 7px 11px; }
+.model-select:disabled { cursor: default; opacity: 0.62; }
+.model-unavailable { color: var(--muted); font-size: 12px; }
 .memory-card { padding: 20px; }
 .memory-card h2 { margin: 5px 0 14px; }
 .memory-card pre { white-space: pre-wrap; font: 14px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; color: #3d433a; margin: 0; max-height: 260px; overflow: auto; }

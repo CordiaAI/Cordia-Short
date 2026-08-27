@@ -123,6 +123,14 @@ class Store:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, connector_id)
                 );
+                CREATE TABLE IF NOT EXISTS connection_settings (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    connector_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, connector_id, name)
+                );
                 CREATE TABLE IF NOT EXISTS setup_cards (
                     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL,
@@ -574,6 +582,32 @@ class Store:
         except InvalidToken as exc:
             raise RuntimeError("stored connector credentials cannot be decrypted") from exc
         return json.loads(plaintext)
+
+    def save_connection_setting(
+        self, user_id: int, connector_id: str, name: str, value: str
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO connection_settings(user_id, connector_id, name, value, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, connector_id, name) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, connector_id, name, value, self._now().isoformat()),
+            )
+
+    def connection_setting(self, user_id: int, connector_id: str, name: str) -> str | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT value FROM connection_settings
+                WHERE user_id = ? AND connector_id = ? AND name = ?
+                """,
+                (user_id, connector_id, name),
+            ).fetchone()
+        return row["value"] if row else None
 
     def save_setup_card(self, user_id: int, card: dict) -> None:
         with self._connection() as connection:

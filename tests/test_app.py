@@ -38,6 +38,7 @@ class FakeAgent:
 class FakeRuntime:
     def __init__(self):
         self.finished = []
+        self.provider = None
 
     def start_connection(self, user_id, connector_id):
         return {
@@ -61,6 +62,16 @@ class FakeRuntime:
     def finish_connection(self, user_id, connector_id, setup_result):
         self.finished.append((user_id, connector_id, setup_result))
         return {"connector_id": connector_id, "status": "verified"}
+
+    def select_value(self, user_id, connector_id, value):
+        self.provider = {"credential": "user-secret", "model": value}
+        return {"connector_id": connector_id, "setting": "model", "value": value}
+
+    def agent_provider(self, user_id):
+        return self.provider
+
+    def decorate_artifact(self, user_id, artifact):
+        return artifact
 
 
 class RecordingWorkspaceClient:
@@ -106,6 +117,12 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.runtime = FakeRuntime()
         self.workspace = RecordingWorkspaceClient()
         self.agent = FakeAgent()
+        self.agent_factory_calls = []
+
+        def agent_factory(api_key, model):
+            self.agent_factory_calls.append((api_key, model))
+            return self.agent
+
         self.app = create_app(
             {
                 "TESTING": True,
@@ -114,6 +131,7 @@ class ApplicationJourneyTests(unittest.TestCase):
                 "SESSION_COOKIE_SECURE": False,
             },
             agent=self.agent,
+            agent_factory=agent_factory,
             connector_runtime=self.runtime,
             workspace_client=self.workspace,
         )
@@ -294,6 +312,29 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("verified", response.json["connection"]["status"])
         self.assertEqual("user-secret", self.runtime.finished[-1][2]["api_key"])
         self.assertNotIn("user-secret", response.get_data(as_text=True))
+
+    def test_model_button_selection_changes_the_agent_used_for_next_message(self):
+        unauthorized = self.client.post(
+            "/api/connectors/select",
+            json={"connector_id": "openai_api", "value": "gpt-5-mini"},
+        )
+        self.assertEqual(401, unauthorized.status_code)
+
+        self.register()
+        selected = self.client.post(
+            "/api/connectors/select",
+            json={"connector_id": "openai_api", "value": "gpt-5-mini"},
+        )
+
+        self.assertEqual(200, selected.status_code)
+        self.assertEqual("gpt-5-mini", selected.json["selection"]["value"])
+        self.assertNotIn("user-secret", selected.get_data(as_text=True))
+
+        self.complete_survey()
+        response = self.client.post("/api/chat", json={"message": "Help me plan this"})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("user-secret", "gpt-5-mini")], self.agent_factory_calls)
 
 
 if __name__ == "__main__":

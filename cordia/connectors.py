@@ -54,6 +54,17 @@ CONNECTORS = {
             "header": {"name": "Authorization", "template": "Bearer {api_key}"},
             "verify_operation": "list_models",
         },
+        "selector": {
+            "setting": "model",
+            "label": "Use model",
+            "operation": "list_models",
+            "value_field": "id",
+            "runtime_role": "agent_model",
+            "credential_field": "api_key",
+            "exclude_value_patterns": [
+                "embedding|image|audio|realtime|transcribe|whisper|tts|moderation|dall-e"
+            ],
+        },
         "operations": {
             "list_models": {
                 "method": "GET",
@@ -120,6 +131,25 @@ def validate_registry(registry: dict | None = None) -> None:
                 raise ValueError(f"{connector_id}: API key header references an unknown field") from exc
             if verify_operation not in operations:
                 raise ValueError(f"{connector_id}: API key verification operation is required")
+        selector = connector.get("selector")
+        if selector:
+            operation = operations.get(selector.get("operation"))
+            if not selector.get("setting") or not selector.get("label") or not operation:
+                raise ValueError(f"{connector_id}: selector setting, label, and operation are required")
+            if selector.get("value_field") not in operation["artifact"]["fields"]:
+                raise ValueError(f"{connector_id}: selector value field must be in the artifact")
+            if selector.get("runtime_role") == "agent_model":
+                credential_fields = {field["name"] for field in auth.get("fields", [])}
+                if selector.get("credential_field") not in credential_fields:
+                    raise ValueError(f"{connector_id}: selector credential field is required")
+            patterns = selector.get("exclude_value_patterns", [])
+            if not isinstance(patterns, list):
+                raise ValueError(f"{connector_id}: selector exclusion patterns must be a list")
+            try:
+                for pattern in patterns:
+                    re.compile(pattern)
+            except (TypeError, re.error) as exc:
+                raise ValueError(f"{connector_id}: selector exclusion pattern is invalid") from exc
 
 
 def _normalize(value: str) -> str:
