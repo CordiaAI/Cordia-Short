@@ -23,6 +23,8 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("/api/chat", javascript)
         self.assertIn("credential_form", javascript)
         self.assertIn("/api/connectors/setup", javascript)
+        self.assertIn("/api/connectors/select", javascript)
+        self.assertIn("data-model-select", javascript)
         self.assertIn('type="${escapeHtml(field.type)}"', javascript)
 
     def test_visual_tokens_match_cordia_identity(self):

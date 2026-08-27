@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 import urllib.error
@@ -8,7 +9,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 
-from .connectors import resolve_connector
+from .connectors import CONNECTORS, resolve_connector
 
 
 class ConnectorError(RuntimeError):
@@ -199,7 +200,100 @@ class ConnectorRuntime:
             "columns": mapping["columns"],
             "rows": rows,
             "source": connector["id"],
+            "operation_id": operation_id,
         }
+
+    def select_value(self, user_id: int, connector_id: str, value: str) -> dict:
+        connector = self._connector(connector_id)
+        selector = connector.get("selector")
+        value = str(value).strip()
+        if self.store.connection_status(user_id, connector["id"]) != "verified":
+            raise ConnectorError("connector is not verified")
+        if not selector or not value:
+            raise ConnectorError("connector selection is not supported")
+        operation = connector["operations"][selector["operation"]]
+        result = self._execute(user_id, connector, operation)
+        items = result.get(operation["result_key"])
+        if not isinstance(items, list) or value not in {
+            str(item.get(selector["value_field"], "")) for item in items
+        }:
+            raise ConnectorError("selected value is not available from the provider")
+        if not self._selector_value_allowed(selector, value):
+            raise ConnectorError("selected value is not compatible with this Cordia role")
+        self.store.save_connection_setting(
+            user_id, connector["id"], selector["setting"], value
+        )
+        if selector.get("runtime_role"):
+            self.store.save_connection_setting(
+                user_id, "__runtime__", selector["runtime_role"], connector["id"]
+            )
+        return {
+            "connector_id": connector["id"],
+            "setting": selector["setting"],
+            "value": value,
+        }
+
+    def decorate_artifact(self, user_id: int, artifact: dict) -> dict:
+        connector = resolve_connector(str(artifact.get("source", "")))
+        if not connector or not connector.get("selector"):
+            return artifact
+        selector = connector["selector"]
+        operation_id = artifact.get("operation_id")
+        if not operation_id and len(connector["operations"]) == 1:
+            operation_id = next(iter(connector["operations"]))
+        if operation_id != selector["operation"]:
+            return artifact
+        fields = connector["operations"][operation_id]["artifact"]["fields"]
+        value_column = fields.index(selector["value_field"])
+        allowed_values = [
+            str(row[value_column])
+            for row in artifact.get("rows", [])
+            if len(row) > value_column
+            and self._selector_value_allowed(selector, str(row[value_column]))
+        ]
+        return {
+            **artifact,
+            "active_value": self.store.connection_setting(
+                user_id, connector["id"], selector["setting"]
+            ),
+            "row_action": {
+                "endpoint": "/api/connectors/select",
+                "label": selector["label"],
+                "value_column": value_column,
+                "allowed_values": allowed_values,
+            },
+        }
+
+    def agent_provider(self, user_id: int) -> dict | None:
+        active_connector_id = self.store.connection_setting(
+            user_id, "__runtime__", "agent_model"
+        )
+        connectors = (
+            [CONNECTORS[active_connector_id]]
+            if active_connector_id in CONNECTORS
+            else CONNECTORS.values()
+        )
+        for connector in connectors:
+            selector = connector.get("selector")
+            if not selector or selector.get("runtime_role") != "agent_model":
+                continue
+            if self.store.connection_status(user_id, connector["id"]) != "verified":
+                continue
+            model = self.store.connection_setting(
+                user_id, connector["id"], selector["setting"]
+            )
+            credentials = self.store.connection_credentials(user_id, connector["id"])
+            credential = (credentials or {}).get(selector["credential_field"])
+            if model and credential:
+                return {"credential": credential, "model": model}
+        return None
+
+    @staticmethod
+    def _selector_value_allowed(selector: dict, value: str) -> bool:
+        return not any(
+            re.search(pattern, value, re.IGNORECASE)
+            for pattern in selector.get("exclude_value_patterns", [])
+        )
 
     def _execute(self, user_id: int, connector: dict, operation: dict) -> dict:
         credentials = self._fresh_credentials(user_id, connector)

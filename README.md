@@ -22,8 +22,8 @@ Sign in -> Surveyor -> operator.md -> same Cordia Agent conversation
 - Expired Google access tokens are refreshed automatically when Google issued a refresh token. A failed or unavailable refresh is reported rather than hidden.
 - Google Drive completed real OAuth on `beta.cordiacode.com` with only `drive.metadata.readonly`; a real `files.list` response produced a persisted DashView table artifact.
 - The same runtime now supports declarative API-key connectors. The secure setup form posts credentials directly to the backend, verifies them against the declared provider endpoint, encrypts successful credentials, and discards rejected credentials.
-- `openai_api` is the first API-key catalog proof and exposes the read-only `list_models` operation. Its automated provider responses are controlled test evidence; do not describe it as live until a user completes verification with a real OpenAI API key.
-- The automated suite contains 50 passing tests at this commit.
+- `openai_api` is the first API-key catalog proof and exposes the read-only `list_models` operation. A verified user can select a provider-returned model from its artifact; Cordia revalidates the choice before saving it and uses that user's encrypted key and selected model for later agent turns.
+- The automated suite contains 57 passing tests at this commit.
 
 ## Run locally
 
@@ -65,7 +65,7 @@ Cordia completes discovery, authorization URL construction, token exchange, encr
 
 ## API-key connector proof
 
-Tell Cordia `Connect OpenAI API`. Cordia renders the same generic connector card as a secure password field outside chat. The submitted key is verified using the registry's declared `list_models` request. Only a successful provider response marks the connection verified; rejected keys are removed. After verification, ask Cordia to `List my OpenAI models` to create a provider-derived table artifact.
+Tell Cordia `Connect OpenAI API`. Cordia renders the same generic connector card as a secure password field outside chat. The submitted key is verified using the registry's declared `list_models` request. Only a successful provider response marks the connection verified; rejected keys are removed. After verification, ask Cordia to `List my OpenAI models` to create a provider-derived table artifact, then select **Use model** beside the model that should power later Cordia Agent messages.
 
 Adding another API-key service requires a declarative record in `cordia/connectors.py`: aliases, secure fields, header template, verification operation, declared HTTPS operations, and artifact mapping. It does not require another runtime or frontend component.
 

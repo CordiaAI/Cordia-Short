@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
@@ -89,6 +90,17 @@ class ConnectorRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verification"):
             validate_registry({"custom": unknown_verification})
 
+    def test_selector_must_reference_declared_artifact_and_credential_fields(self):
+        missing_value = json.loads(json.dumps(CONNECTORS["openai_api"]))
+        missing_value["selector"]["value_field"] = "missing"
+        with self.assertRaisesRegex(ValueError, "artifact"):
+            validate_registry({"openai_api": missing_value})
+
+        missing_credential = json.loads(json.dumps(CONNECTORS["openai_api"]))
+        missing_credential["selector"]["credential_field"] = "missing"
+        with self.assertRaisesRegex(ValueError, "credential"):
+            validate_registry({"openai_api": missing_credential})
+
 
 class ConnectorRuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -138,6 +150,7 @@ class ConnectorRuntimeTests(unittest.TestCase):
                 "data": [
                     {"id": "gpt-5-mini", "owned_by": "openai"},
                     {"id": "gpt-4.1-mini", "owned_by": "system"},
+                    {"id": "text-embedding-3-small", "owned_by": "openai"},
                 ]
             }
         raise AssertionError(f"unexpected request: {method} {url}")
@@ -237,6 +250,86 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.assertEqual("openai_api", artifact["source"])
         self.assertEqual(["gpt-5-mini", "openai"], artifact["rows"][0])
         self.assertNotIn("user-openai-key", json.dumps(artifact))
+
+    def test_declared_selector_verifies_and_saves_provider_model(self):
+        runtime = self.runtime()
+        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
+
+        selected = runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
+        artifact = runtime.call_operation(self.user_id, "openai_api", "list_models", {})
+        decorated = runtime.decorate_artifact(self.user_id, artifact)
+
+        self.assertEqual(
+            {"connector_id": "openai_api", "setting": "model", "value": "gpt-5-mini"},
+            selected,
+        )
+        self.assertEqual("gpt-5-mini", decorated["active_value"])
+        self.assertEqual(
+            {
+                "endpoint": "/api/connectors/select",
+                "label": "Use model",
+                "value_column": 0,
+                "allowed_values": ["gpt-5-mini", "gpt-4.1-mini"],
+            },
+            decorated["row_action"],
+        )
+        self.assertEqual(
+            {"credential": "user-openai-key", "model": "gpt-5-mini"},
+            runtime.agent_provider(self.user_id),
+        )
+        self.assertNotIn("user-openai-key", json.dumps(decorated))
+
+    def test_declared_selector_rejects_unknown_model_without_changing_selection(self):
+        runtime = self.runtime()
+        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
+        runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
+
+        with self.assertRaisesRegex(ConnectorError, "not available"):
+            runtime.select_value(self.user_id, "openai_api", "invented-model")
+
+        self.assertEqual(
+            "gpt-5-mini",
+            self.store.connection_setting(self.user_id, "openai_api", "model"),
+        )
+
+    def test_declared_selector_rejects_incompatible_model_without_changing_selection(self):
+        runtime = self.runtime()
+        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
+        runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
+
+        with self.assertRaisesRegex(ConnectorError, "not compatible"):
+            runtime.select_value(self.user_id, "openai_api", "text-embedding-3-small")
+
+        self.assertEqual(
+            "gpt-5-mini",
+            self.store.connection_setting(self.user_id, "openai_api", "model"),
+        )
+
+    def test_latest_successful_agent_provider_selection_wins(self):
+        second = json.loads(json.dumps(CONNECTORS["openai_api"]))
+        second["id"] = "second_ai"
+        second["name"] = "Second AI"
+        second["aliases"] = ["second ai"]
+
+        def two_provider_transport(method, url, headers, data, timeout):
+            credential = headers.get("Authorization")
+            if credential == "Bearer first-key":
+                return {"data": [{"id": "gpt-first", "owned_by": "first"}]}
+            if credential == "Bearer second-key":
+                return {"data": [{"id": "gpt-second", "owned_by": "second"}]}
+            raise OSError("invalid API key")
+
+        with patch.dict(CONNECTORS, {"second_ai": second}):
+            runtime = ConnectorRuntime(self.store, env=self.env, transport=two_provider_transport)
+            runtime.finish_connection(self.user_id, "openai_api", {"api_key": "first-key"})
+            runtime.finish_connection(self.user_id, "second_ai", {"api_key": "second-key"})
+            runtime.select_value(self.user_id, "openai_api", "gpt-first")
+            runtime.select_value(self.user_id, "second_ai", "gpt-second")
+
+            self.assertEqual(
+                {"credential": "second-key", "model": "gpt-second"},
+                runtime.agent_provider(self.user_id),
+            )
 
     def test_finish_connection_exchanges_code_verifies_provider_and_encrypts_tokens(self):
         runtime = self.runtime()

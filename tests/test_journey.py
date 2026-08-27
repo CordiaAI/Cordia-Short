@@ -43,6 +43,19 @@ class StoreJourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already registered"):
             self.store.register("PERSON@example.com", "another password")
 
+    def test_connector_setting_is_scoped_to_user_and_connector(self):
+        first_user = self.store.register("first@example.com", "correct horse battery")
+        second_user = self.store.register("second@example.com", "correct horse battery")
+
+        self.store.save_connection_setting(first_user, "openai_api", "model", "gpt-5-mini")
+
+        self.assertEqual(
+            "gpt-5-mini",
+            self.store.connection_setting(first_user, "openai_api", "model"),
+        )
+        self.assertIsNone(self.store.connection_setting(second_user, "openai_api", "model"))
+        self.assertIsNone(self.store.connection_setting(first_user, "google_drive", "model"))
+
     def test_survey_answers_write_readable_ordered_operator_profile(self):
         user_id = self.store.register("person@example.com", "correct horse battery")
         self.store.save_survey_answer(user_id, "name", "Jordan")

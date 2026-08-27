@@ -46,6 +46,7 @@ def load_local_env(path: Path) -> None:
 def create_app(
     config: dict | None = None,
     agent=None,
+    agent_factory=None,
     connector_runtime=None,
     workspace_client=None,
 ) -> Flask:
@@ -63,6 +64,7 @@ def create_app(
     cordia_agent = agent or Agent(
         os.getenv("OPENAI_API_KEY", ""), os.getenv("OPENAI_MODEL", "gpt-5-mini")
     )
+    make_agent = agent_factory or Agent
     runtime = connector_runtime or ConnectorRuntime(store)
     workspace = workspace_client or WorkspaceMCPClient(runtime, store)
     app.extensions["cordia_store"] = store
@@ -96,9 +98,18 @@ def create_app(
             "survey": survey,
             "operator": store.operator_markdown(user_id),
             "messages": store.messages(user_id),
-            "artifacts": store.artifacts(user_id),
+            "artifacts": [
+                runtime.decorate_artifact(user_id, artifact)
+                for artifact in store.artifacts(user_id)
+            ],
             "setup_card": store.setup_card(user_id),
         }
+
+    def active_agent(user_id: int):
+        provider = runtime.agent_provider(user_id)
+        if not provider:
+            return cordia_agent
+        return make_agent(provider["credential"], provider["model"])
 
     def execute_workspace_action(user_id: int, action: dict) -> tuple[dict | None, dict | None]:
         setup_card = None
@@ -218,7 +229,9 @@ def create_app(
             return jsonify({"ok": False, "error": "message is required"}), 400
         store.add_message(user_id, "user", message)
         try:
-            action = cordia_agent.respond(store.operator_markdown(user_id), store.messages(user_id))
+            action = active_agent(user_id).respond(
+                store.operator_markdown(user_id), store.messages(user_id)
+            )
             setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
             return jsonify(
@@ -255,7 +268,9 @@ def create_app(
         try:
             retry_messages = store.messages_before_response(user_id, response_id)
             adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
-            action = cordia_agent.respond(store.operator_markdown(user_id), retry_messages)
+            action = active_agent(user_id).respond(
+                store.operator_markdown(user_id), retry_messages
+            )
             setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
             return jsonify(
@@ -316,6 +331,20 @@ def create_app(
             return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
         store.clear_setup_card(user_id)
         return jsonify({"ok": True, "connection": connection, **state_payload(user_id)})
+
+    @app.post("/api/connectors/select")
+    def connector_select():
+        user_id = require_user()
+        payload = request.get_json(silent=True) or {}
+        connector_id = str(payload.get("connector_id", "")).strip()
+        value = str(payload.get("value", "")).strip()
+        if not connector_id or not value:
+            return jsonify({"ok": False, "error": "connector and selection are required"}), 400
+        try:
+            selection = runtime.select_value(user_id, connector_id, value)
+        except ConnectorError as exc:
+            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
+        return jsonify({"ok": True, "selection": selection, **state_payload(user_id)})
 
     return app
 
