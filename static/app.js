@@ -61,6 +61,20 @@ function renderMessages(messages = [], allowAdjustments = false) {
   container.scrollTop = container.scrollHeight;
 }
 
+function renderPendingMessage(message) {
+  const pendingMessages = [
+    ...(currentState.messages || []),
+    { id: "pending-user", role: "user", kind: "chat", content: message },
+  ];
+  renderMessages(pendingMessages, false);
+  const container = byId("messages");
+  container.insertAdjacentHTML("beforeend", `
+    <div class="message-block assistant cordia-pending" role="status" aria-label="Cordia is working">
+      <div class="cordia-working" aria-hidden="true">∞</div>
+    </div>`);
+  container.scrollTop = container.scrollHeight;
+}
+
 function renderSetupCard(card) {
   const container = byId("setup-card");
   if (!card) {
@@ -150,7 +164,12 @@ function render(state, transient = {}) {
   const params = new URLSearchParams(location.search);
   const notice = byId("notice");
   if (params.get("connected")) {
-    notice.textContent = "Connector verified. Ask Cordia to use it.";
+    const updateStatus = params.get("workspace_update");
+    notice.textContent = updateStatus === "updated"
+      ? "Connector verified. Cordia updated your workspace automatically."
+      : updateStatus === "failed"
+        ? "Connector verified, but its first workspace view could not be loaded yet."
+        : "Connector verified and ready.";
     notice.hidden = false;
   } else if (params.get("error")) {
     notice.textContent = "The connector was not verified. Return to chat and try again.";
@@ -184,13 +203,24 @@ byId("auth-form").addEventListener("submit", async (event) => {
   } catch (error) { byId("auth-error").textContent = error.message; }
 });
 
-byId("composer").addEventListener("submit", async (event) => {
+const composer = byId("composer");
+const messageInput = byId("message-input");
+
+messageInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    composer.requestSubmit();
+  }
+});
+
+composer.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const input = byId("message-input");
+  const input = messageInput;
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || input.disabled) return;
   input.value = "";
   input.disabled = true;
+  renderPendingMessage(message);
   try {
     const path = currentState.state === "survey" ? "/api/survey" : "/api/chat";
     const body = currentState.state === "survey" ? { answer: message } : { message };
@@ -260,7 +290,11 @@ byId("setup-card").addEventListener("submit", async (event) => {
     form.reset();
     render(state);
     const successNotice = byId("notice");
-    successNotice.textContent = "Connector verified. Ask Cordia to use it.";
+    successNotice.textContent = state.workspace_update?.status === "updated"
+      ? "Connector verified. Cordia updated your workspace automatically."
+      : state.workspace_update?.status === "failed"
+        ? "Connector verified, but its first workspace view could not be loaded yet."
+        : "Connector verified and ready.";
     successNotice.hidden = false;
   } catch (error) {
     render(error.payload || currentState);
