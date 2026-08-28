@@ -37,6 +37,20 @@ CONNECTORS = {
             }
         },
         "post_connect_operation": "list_recent_files",
+        "live_view": {
+            "operation": "list_recent_files",
+            "logo": "/static/assets/google-drive.png",
+            "required_scopes": [
+                "https://www.googleapis.com/auth/drive.metadata.readonly"
+            ],
+            "permission": {
+                "summary": "Open a live, read-only view of your recent Google Drive files inside Cordia.",
+                "data": ["File names", "File types", "Modified dates", "Google Drive links"],
+                "actions": ["Refresh recent files", "Open a file in Google Drive"],
+                "revocation": "You can remove Cordia from your Google Account permissions at any time.",
+                "authorize_label": "Continue with Google",
+            },
+        },
     },
     "openai_api": {
         "id": "openai_api",
@@ -110,6 +124,21 @@ def validate_registry(registry: dict | None = None) -> None:
         post_connect_operation = connector.get("post_connect_operation")
         if post_connect_operation and post_connect_operation not in operations:
             raise ValueError(f"{connector_id}: post-connect operation must be declared")
+        live_view = connector.get("live_view")
+        if live_view:
+            if live_view.get("operation") not in operations:
+                raise ValueError(f"{connector_id}: live-view operation must be declared")
+            if not live_view.get("logo") or not str(live_view["logo"]).startswith("/static/"):
+                raise ValueError(f"{connector_id}: live-view logo must be a local static asset")
+            scopes = live_view.get("required_scopes")
+            permission = live_view.get("permission")
+            if not isinstance(scopes, list):
+                raise ValueError(f"{connector_id}: live-view scopes must be a list")
+            if not isinstance(permission, dict) or not all(
+                permission.get(field)
+                for field in ("summary", "data", "actions", "revocation", "authorize_label")
+            ):
+                raise ValueError(f"{connector_id}: live-view permission copy is required")
         if auth["kind"] == "api_key":
             fields = auth.get("fields")
             header = auth.get("header")

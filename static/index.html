@@ -3,23 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Cordia is one adaptive workspace for your agent, connectors, artifacts, and live work.">
   <title>Cordia</title>
+  <link rel="icon" href="/static/assets/cordia-logo-header.webp">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Cordia home"><span class="mark">∞</span> cordia</a>
     <span class="workspace-label">My Workspace</span>
+    <button id="back-to-cordia" class="back-button" type="button" disabled aria-disabled="true" title="Cordia home is coming soon">← Back to Cordia</button>
     <div class="top-actions">
       <span id="status-pill" class="status-pill">Checking…</span>
-      <button id="signout-button" class="quiet-button" hidden>Sign out</button>
+      <div id="account" class="account" hidden>
+        <button id="account-menu-button" class="account-avatar" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="account-menu">
+          <span id="account-initial">∞</span><span class="sr-only">Open account menu</span>
+        </button>
+        <div id="account-menu" class="account-menu" role="menu" hidden>
+          <a role="menuitem" href="https://cordiacode.com/profile.html">Your profile</a>
+          <a role="menuitem" href="https://cordiacode.com/certification.html">Certification</a>
+          <a role="menuitem" href="https://cordiacode.com/assessment.html">Assessment</a>
+          <a role="menuitem" href="https://cordiacode.com/pricing.html">Billing</a>
+          <button type="button" role="menuitem" data-workspace-settings>Workspace</button>
+          <a role="menuitem" href="https://cordiacode.com/survey.html">Feedback</a>
+          <button type="button" role="menuitem" data-signout>Sign out</button>
+        </div>
+      </div>
     </div>
   </header>
 
   <main id="app-shell" class="app-shell" hidden>
     <aside id="chat-panel" class="chat-panel">
       <div class="assistant-heading">
-        <span class="assistant-mark">C</span>
         <div><strong>Cordia Agent</strong><small>Shape the work. Keep the source of truth.</small></div>
       </div>
       <div id="messages" class="messages" aria-live="polite"></div>
@@ -32,8 +47,7 @@
 
     <section class="workspace">
       <div class="workspace-heading">
-        <div><small>WORKSPACE</small><h1 id="workspace-title">Your workspace</h1><p id="workspace-subtitle">Built from what Cordia understands about you.</p></div>
-        <span class="view-pill">DASHVIEW</span>
+        <h1 id="workspace-title">Your workspace</h1>
       </div>
       <div id="notice" class="notice" hidden></div>
       <section id="setup-card" class="setup-card" hidden></section>
@@ -63,6 +77,34 @@
       <p id="auth-error" class="error" aria-live="polite"></p>
     </div>
   </section>
+
+  <dialog id="live-view-permission" class="permission-dialog" aria-labelledby="live-view-title">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-heading">
+        <img id="live-view-logo" class="dialog-logo" alt="">
+        <div><small>LIVE VIEW ACCESS</small><h2 id="live-view-title">Open Live View</h2></div>
+      </div>
+      <p id="live-view-summary"></p>
+      <div class="permission-columns">
+        <section><strong>Data Cordia will use</strong><ul id="live-view-data"></ul></section>
+        <section><strong>What Cordia can do</strong><ul id="live-view-actions"></ul></section>
+      </div>
+      <p id="live-view-revocation" class="revocation"></p>
+      <div class="dialog-actions">
+        <button type="button" class="quiet-button" data-live-view-cancel>Cancel</button>
+        <button type="button" class="primary-button" data-live-view-confirm>Open Live View</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="workspace-settings" class="settings-dialog" aria-labelledby="workspace-settings-title">
+    <div class="dialog-card">
+      <div class="dialog-heading"><div><small>WORKSPACE</small><h2 id="workspace-settings-title">Connections & models</h2></div></div>
+      <p id="workspace-runtime" class="settings-summary"></p>
+      <div id="workspace-models"></div>
+      <div class="dialog-actions"><button type="button" class="quiet-button" data-settings-close>Close</button></div>
+    </div>
+  </dialog>
 
   <script src="/static/app.js" defer></script>
 </body>
