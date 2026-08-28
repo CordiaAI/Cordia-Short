@@ -186,6 +186,65 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(2, len(self.store.artifacts(user_id)))
 
+    def test_current_operation_replaces_matching_legacy_artifact_window(self):
+        user_id = self.store.register("person@example.com", "correct horse battery")
+        legacy_id = self.store.save_artifact(
+            user_id,
+            {
+                "type": "table",
+                "title": "Recent Google Drive files",
+                "columns": ["Name"],
+                "rows": [["Old.md"]],
+                "source": "google_drive",
+            },
+        )
+
+        current_id = self.store.save_artifact(
+            user_id,
+            {
+                "type": "table",
+                "title": "Recent Google Drive files",
+                "columns": ["Name"],
+                "rows": [["Current.md"]],
+                "source": "google_drive",
+                "operation_id": "list_recent_files",
+            },
+        )
+
+        artifacts = self.store.artifacts(user_id)
+        self.assertEqual(legacy_id, current_id)
+        self.assertEqual(1, len(artifacts))
+        self.assertEqual("Current.md", artifacts[0]["rows"][0][0])
+
+    def test_existing_legacy_and_current_rows_render_as_one_window(self):
+        user_id = self.store.register("person@example.com", "correct horse battery")
+        legacy = {
+            "type": "table",
+            "title": "Recent Google Drive files",
+            "columns": ["Name"],
+            "rows": [["Old.md"]],
+            "source": "google_drive",
+        }
+        current = {
+            **legacy,
+            "rows": [["Current.md"]],
+            "operation_id": "list_recent_files",
+        }
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO artifacts(user_id, payload, created_at) VALUES (?, ?, ?)",
+                (user_id, json.dumps(legacy), "2026-08-26T10:00:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO artifacts(user_id, payload, created_at) VALUES (?, ?, ?)",
+                (user_id, json.dumps(current), "2026-08-27T10:00:00+00:00"),
+            )
+            connection.commit()
+
+        artifacts = self.store.artifacts(user_id)
+        self.assertEqual(1, len(artifacts))
+        self.assertEqual("Current.md", artifacts[0]["rows"][0][0])
+
 
 class ScriptedConnectorAgent:
     def respond(self, memory, messages):
