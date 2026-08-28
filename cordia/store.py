@@ -488,14 +488,21 @@ class Store:
 
     def save_artifact(self, user_id: int, artifact: dict) -> int:
         slot = self._artifact_slot(artifact)
+        display_slot = self._artifact_display_slot(artifact)
         with self._connection() as connection:
-            if slot:
+            if slot or display_slot:
                 rows = connection.execute(
                     "SELECT id, payload FROM artifacts WHERE user_id = ? ORDER BY id DESC",
                     (user_id,),
                 ).fetchall()
                 for row in rows:
-                    if self._artifact_slot(json.loads(row["payload"])) == slot:
+                    saved = json.loads(row["payload"])
+                    same_operation = slot and self._artifact_slot(saved) == slot
+                    same_window = (
+                        display_slot
+                        and self._artifact_display_slot(saved) == display_slot
+                    )
+                    if same_operation or same_window:
                         connection.execute(
                             "UPDATE artifacts SET payload = ?, created_at = ? WHERE id = ?",
                             (json.dumps(artifact), self._now().isoformat(), row["id"]),
@@ -513,6 +520,13 @@ class Store:
         operation_id = str(artifact.get("operation_id", "")).strip()
         return f"{source}:{operation_id}" if source and operation_id else None
 
+    @staticmethod
+    def _artifact_display_slot(artifact: dict) -> str | None:
+        source = str(artifact.get("source", "")).strip().casefold()
+        surface = str(artifact.get("surface", "workspace")).strip().casefold()
+        title = str(artifact.get("title", "")).strip().casefold()
+        return f"{source}:{surface}:{title}" if source and title else None
+
     def artifacts(self, user_id: int) -> list[dict]:
         with self._connection() as connection:
             rows = connection.execute(
@@ -521,13 +535,19 @@ class Store:
             ).fetchall()
         artifacts = []
         visible_slots = set()
+        visible_display_slots = set()
         for row in rows:
             artifact = json.loads(row["payload"])
             slot = self._artifact_slot(artifact)
-            if slot and slot in visible_slots:
+            display_slot = self._artifact_display_slot(artifact)
+            if (slot and slot in visible_slots) or (
+                display_slot and display_slot in visible_display_slots
+            ):
                 continue
             if slot:
                 visible_slots.add(slot)
+            if display_slot:
+                visible_display_slots.add(display_slot)
             artifact.update({"id": int(row["id"]), "created_at": row["created_at"]})
             artifacts.append(artifact)
         return artifacts
