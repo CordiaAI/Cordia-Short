@@ -401,6 +401,54 @@ def create_app(
             return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
         return jsonify({"ok": True, "selection": selection, **state_payload(user_id)})
 
+    @app.post("/api/connectors/live-view")
+    def connector_live_view():
+        user_id = require_user()
+        payload = request.get_json(silent=True) or {}
+        connector_id = str(payload.get("connector_id", "")).strip()
+        if not connector_id:
+            return jsonify({"ok": False, "error": "connector is required"}), 400
+        try:
+            access = runtime.live_view_access(user_id, connector_id)
+        except ConnectorError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 422
+        if access["status"] == "unsupported":
+            return jsonify({"ok": False, "error": "Live View is not supported"}), 422
+        if access["status"] != "granted":
+            try:
+                setup_card = runtime.start_connection(
+                    user_id,
+                    connector_id,
+                    requested_scopes=access.get("missing_scopes") or None,
+                )
+            except ConnectorError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 422
+            store.save_setup_card(user_id, setup_card)
+            return jsonify(
+                {
+                    "ok": True,
+                    "live_view": access,
+                    "setup_card": setup_card,
+                    **state_payload(user_id),
+                }
+            )
+        try:
+            artifact = create_operation_artifact(
+                user_id, connector_id, access["operation"]
+            )
+        except WorkspaceMCPError as exc:
+            return jsonify(
+                {"ok": False, "error": str(exc), "live_view": access, **state_payload(user_id)}
+            ), 502
+        return jsonify(
+            {
+                "ok": True,
+                "live_view": access,
+                "artifact": artifact,
+                **state_payload(user_id),
+            }
+        )
+
     return app
 
 

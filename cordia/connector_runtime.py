@@ -54,7 +54,9 @@ class ConnectorRuntime:
         base_url = self.env.get("CORDIA_BASE_URL", "http://127.0.0.1:5050").rstrip("/")
         return base_url + connector["auth"]["callback_path"]
 
-    def start_connection(self, user_id: int, connector_id: str) -> dict:
+    def start_connection(
+        self, user_id: int, connector_id: str, requested_scopes: list[str] | None = None
+    ) -> dict:
         connector = self._connector(connector_id)
         auth = connector["auth"]
         if auth["kind"] == "api_key":
@@ -79,15 +81,19 @@ class ConnectorRuntime:
                 "status": "needs_configuration",
                 "message": "Server configuration missing: " + ", ".join(missing),
             }
-        state = self.store.create_oauth_state(user_id, connector["id"])
+        scopes = [auth["scope"], *(requested_scopes or [])]
+        scopes = list(dict.fromkeys(scope for scope in scopes if scope))
+        state = self.store.create_oauth_state(
+            user_id, connector["id"], requested_scopes=scopes
+        )
         query = urllib.parse.urlencode(
             {
                 "client_id": self.env[auth["client_id_env"]],
                 "redirect_uri": self._redirect_uri(connector),
                 "response_type": "code",
-                "scope": auth["scope"],
+                "scope": " ".join(scopes),
                 "access_type": "offline",
-                "include_granted_scopes": "false",
+                "include_granted_scopes": "true" if requested_scopes else "false",
                 "prompt": "consent",
                 "state": state,
             }
@@ -99,6 +105,39 @@ class ConnectorRuntime:
             "status": "ready",
             "message": "Continue to the provider to approve read-only access.",
             "action_url": auth["authorize_url"] + "?" + query,
+        }
+
+    def live_view_access(self, user_id: int, connector_id: str) -> dict:
+        connector = self._connector(connector_id)
+        live_view = connector.get("live_view")
+        if not live_view:
+            return {"status": "unsupported", "connector_id": connector["id"]}
+        credentials_available = True
+        try:
+            credentials = self.store.connection_credentials(user_id, connector["id"]) or {}
+        except RuntimeError:
+            credentials = {}
+            credentials_available = False
+        granted_scopes = set(str(credentials.get("scope", "")).split())
+        required_scopes = list(live_view.get("required_scopes", []))
+        missing_scopes = [scope for scope in required_scopes if scope not in granted_scopes]
+        status = "granted"
+        if (
+            self.store.connection_status(user_id, connector["id"]) != "verified"
+            or not credentials_available
+        ):
+            status = "needs_connection"
+        elif missing_scopes:
+            status = "needs_authorization"
+        return {
+            "status": status,
+            "connector_id": connector["id"],
+            "connector_name": connector["name"],
+            "operation": live_view["operation"],
+            "logo": live_view["logo"],
+            "required_scopes": required_scopes,
+            "missing_scopes": missing_scopes,
+            "permission": dict(live_view["permission"]),
         }
 
     def finish_connection(self, user_id: int, connector_id: str, setup_result: dict) -> dict:
@@ -113,6 +152,9 @@ class ConnectorRuntime:
     def _finish_oauth2(self, user_id: int, connector: dict, setup_result: dict) -> dict:
         state = str(setup_result.get("state", ""))
         code = str(setup_result.get("code", ""))
+        requested_scopes = self.store.oauth_requested_scopes(
+            user_id, connector["id"], state
+        )
         if not state or not code or not self.store.consume_oauth_state(user_id, connector["id"], state):
             raise ConnectorError("OAuth state is invalid, expired, owned by another user, or already used")
         auth = connector["auth"]
@@ -134,11 +176,15 @@ class ConnectorRuntime:
             raise ConnectorError("OAuth token exchange failed") from exc
         if not token.get("access_token"):
             raise ConnectorError("OAuth token exchange returned no access token")
+        try:
+            existing = self.store.connection_credentials(user_id, connector["id"]) or {}
+        except RuntimeError:
+            existing = {}
         credentials = {
             "access_token": token["access_token"],
-            "refresh_token": token.get("refresh_token"),
+            "refresh_token": token.get("refresh_token") or existing.get("refresh_token"),
             "expires_at": int(time.time()) + int(token.get("expires_in", 3600)),
-            "scope": token.get("scope", ""),
+            "scope": token.get("scope") or " ".join(requested_scopes),
             "token_type": token.get("token_type", "Bearer"),
         }
         self.store.save_connection(user_id, connector["id"], "pending_verification", credentials)
@@ -235,14 +281,21 @@ class ConnectorRuntime:
 
     def decorate_artifact(self, user_id: int, artifact: dict) -> dict:
         connector = resolve_connector(str(artifact.get("source", "")))
-        if not connector or not connector.get("selector"):
+        if not connector:
             return artifact
+        decorated = {
+            **artifact,
+            "connector_name": connector["name"],
+            "live_view": self.live_view_access(user_id, connector["id"]),
+        }
+        if not connector.get("selector"):
+            return decorated
         selector = connector["selector"]
         operation_id = artifact.get("operation_id")
         if not operation_id and len(connector["operations"]) == 1:
             operation_id = next(iter(connector["operations"]))
         if operation_id != selector["operation"]:
-            return artifact
+            return decorated
         fields = connector["operations"][operation_id]["artifact"]["fields"]
         value_column = fields.index(selector["value_field"])
         allowed_values = [
@@ -252,7 +305,7 @@ class ConnectorRuntime:
             and self._selector_value_allowed(selector, str(row[value_column]))
         ]
         return {
-            **artifact,
+            **decorated,
             "active_value": self.store.connection_setting(
                 user_id, connector["id"], selector["setting"]
             ),
@@ -262,6 +315,11 @@ class ConnectorRuntime:
                 "value_column": value_column,
                 "allowed_values": allowed_values,
             },
+            "surface": (
+                "workspace_settings"
+                if selector.get("runtime_role") == "agent_model"
+                else "workspace"
+            ),
         }
 
     def agent_provider(self, user_id: int) -> dict | None:

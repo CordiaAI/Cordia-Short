@@ -1,5 +1,8 @@
 let currentState = { state: "signed_out" };
 let authMode = "register";
+let activeLiveViewSource = null;
+let pendingLiveView = null;
+let settingsArtifacts = [];
 
 const byId = (id) => document.getElementById(id);
 
@@ -101,7 +104,7 @@ function renderSetupCard(card) {
   container.hidden = false;
 }
 
-function renderArtifact(artifact) {
+function renderArtifact(artifact, options = {}) {
   const rowAction = artifact.row_action;
   const headings = (artifact.columns || []).map((column) => `<th>${escapeHtml(column)}</th>`).join("")
     + (rowAction ? "<th>Use</th>" : "");
@@ -122,17 +125,79 @@ function renderArtifact(artifact) {
       data-value="${escapeHtml(value)}" ${active ? "disabled" : ""}>${active ? "Active" : escapeHtml(rowAction.label)}</button>`;
     return `<tr>${cells}<td>${button}</td></tr>`;
   }).join("");
-  return `<article class="artifact-window">
-    <div class="artifact-title"><strong>${escapeHtml(artifact.title)}</strong><span>${escapeHtml(artifact.source)}</span></div>
+  const liveView = artifact.live_view || {};
+  const isLive = !options.settings && activeLiveViewSource === artifact.source;
+  const logo = liveView.logo
+    ? `<img class="connector-logo" src="${escapeHtml(liveView.logo)}" alt="${escapeHtml(artifact.connector_name || artifact.source)} logo">`
+    : "";
+  const liveViewButton = !options.settings && liveView.status && liveView.status !== "unsupported"
+    ? `<button type="button" class="live-view-button" data-live-view data-connector-id="${escapeHtml(artifact.source)}" aria-pressed="${isLive}">${isLive ? "Live View on" : "Live View"}</button>`
+    : "";
+  return `<article class="artifact-window${isLive ? " live-view-active" : ""}" data-artifact-source="${escapeHtml(artifact.source)}">
+    <div class="artifact-title"><div class="artifact-identity">${logo}<strong>${escapeHtml(artifact.title)}</strong></div>${liveViewButton}</div>
     <div class="artifact-body"><table><thead><tr>${headings}</tr></thead><tbody>${rows}</tbody></table></div>
   </article>`;
 }
 
 function renderArtifacts(artifacts = []) {
   const container = byId("artifact-grid");
-  container.innerHTML = artifacts.length
-    ? artifacts.map(renderArtifact).join("")
+  settingsArtifacts = artifacts.filter((artifact) => artifact.surface === "workspace_settings");
+  const visibleArtifacts = artifacts.filter((artifact) => artifact.surface !== "workspace_settings");
+  container.innerHTML = visibleArtifacts.length
+    ? visibleArtifacts.map((artifact) => renderArtifact(artifact)).join("")
     : `<article class="artifact-window"><div class="artifact-title"><strong>Your first artifact will appear here</strong><span>READY</span></div><div class="artifact-body"><p style="padding:18px;color:var(--muted)">Ask Cordia to connect a service or organize part of your work.</p></div></article>`;
+  renderWorkspaceSettings();
+}
+
+function renderWorkspaceSettings() {
+  const runtime = currentState.agent_runtime;
+  byId("workspace-runtime").textContent = runtime
+    ? `Cordia Agent is using ${runtime.provider} · ${runtime.model}.`
+    : "No agent model has been selected yet.";
+  byId("workspace-models").innerHTML = settingsArtifacts.length
+    ? settingsArtifacts.map((artifact) => renderArtifact(artifact, { settings: true })).join("")
+    : `<p class="settings-summary">Connect a model provider to manage it here.</p>`;
+}
+
+function openLiveViewPermission(artifact) {
+  const liveView = artifact.live_view;
+  pendingLiveView = { connectorId: artifact.source };
+  byId("live-view-logo").src = liveView.logo;
+  byId("live-view-logo").alt = `${artifact.connector_name || artifact.source} logo`;
+  byId("live-view-title").textContent = `Open ${artifact.connector_name || "connector"} Live View`;
+  byId("live-view-summary").textContent = liveView.permission.summary;
+  byId("live-view-data").innerHTML = liveView.permission.data.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  byId("live-view-actions").innerHTML = liveView.permission.actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  byId("live-view-revocation").textContent = liveView.permission.revocation;
+  byId("live-view-permission").querySelector("[data-live-view-confirm]").textContent = liveView.status === "granted"
+    ? "Open Live View"
+    : liveView.permission.authorize_label || "Continue securely";
+  byId("live-view-permission").showModal();
+}
+
+async function activateLiveView(connectorId) {
+  const state = await api("/api/connectors/live-view", {
+    method: "POST",
+    body: JSON.stringify({ connector_id: connectorId }),
+  });
+  if (state.setup_card) {
+    if (state.setup_card.action_url) {
+      sessionStorage.setItem("cordia-live-view-return", connectorId);
+      location.assign(state.setup_card.action_url);
+      return;
+    }
+    render(state, state);
+    const notice = byId("notice");
+    notice.textContent = state.setup_card.message || "This connector needs configuration before Live View can open.";
+    notice.hidden = false;
+    return;
+  }
+  if (!state.artifact) throw new Error("Live View returned no provider artifact.");
+  activeLiveViewSource = connectorId;
+  render(state, state);
+  const notice = byId("notice");
+  notice.textContent = "Live View is open with fresh provider data.";
+  notice.hidden = false;
 }
 
 function render(state, transient = {}) {
@@ -140,7 +205,7 @@ function render(state, transient = {}) {
   const signedOut = state.state === "signed_out";
   byId("auth-panel").hidden = !signedOut;
   byId("app-shell").hidden = signedOut;
-  byId("signout-button").hidden = signedOut;
+  byId("account").hidden = signedOut;
   const agentRuntime = state.agent_runtime;
   byId("status-pill").textContent = signedOut
     ? "Signed out"
@@ -161,6 +226,7 @@ function render(state, transient = {}) {
   byId("message-input").placeholder = survey ? "Answer Surveyor…" : "Message Cordia…";
   const nameMatch = (state.operator || "").match(/## Name\s+([^#\n][^\n]*)/);
   byId("workspace-title").textContent = nameMatch ? `${nameMatch[1]}'s workspace` : "Your workspace";
+  byId("account-initial").textContent = nameMatch ? nameMatch[1].trim().charAt(0).toUpperCase() : "∞";
   const params = new URLSearchParams(location.search);
   const notice = byId("notice");
   if (params.get("connected")) {
@@ -171,7 +237,16 @@ function render(state, transient = {}) {
         ? "Connector verified, but its first workspace view could not be loaded yet."
         : "Connector verified and ready.";
     notice.hidden = false;
+    const resumeLiveView = sessionStorage.getItem("cordia-live-view-return");
+    if (resumeLiveView) {
+      sessionStorage.removeItem("cordia-live-view-return");
+      queueMicrotask(() => activateLiveView(resumeLiveView).catch((error) => {
+        notice.textContent = error.message;
+        notice.hidden = false;
+      }));
+    }
   } else if (params.get("error")) {
+    sessionStorage.removeItem("cordia-live-view-return");
     notice.textContent = "The connector was not verified. Return to chat and try again.";
     notice.hidden = false;
   }
@@ -307,6 +382,18 @@ byId("setup-card").addEventListener("submit", async (event) => {
 });
 
 byId("artifact-grid").addEventListener("click", async (event) => {
+  const liveViewButton = event.target.closest("[data-live-view]");
+  if (liveViewButton) {
+    const connectorId = liveViewButton.dataset.connectorId;
+    if (activeLiveViewSource === connectorId) {
+      activeLiveViewSource = null;
+      render(currentState);
+      return;
+    }
+    const artifact = (currentState.artifacts || []).find((item) => item.source === connectorId);
+    if (artifact?.live_view) openLiveViewPermission(artifact);
+    return;
+  }
   const button = event.target.closest("[data-model-select]");
   if (!button) return;
   button.disabled = true;
@@ -333,9 +420,76 @@ byId("artifact-grid").addEventListener("click", async (event) => {
   }
 });
 
-byId("signout-button").addEventListener("click", async () => {
+byId("workspace-models").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-model-select]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const state = await api(button.dataset.endpoint || "/api/connectors/select", {
+      method: "POST",
+      body: JSON.stringify({ connector_id: button.dataset.connectorId, value: button.dataset.value }),
+    });
+    render(state);
+    byId("workspace-runtime").textContent = `${state.selection.value} is now powering your Cordia Agent.`;
+  } catch (error) {
+    button.disabled = false;
+    byId("workspace-runtime").textContent = error.message;
+  }
+});
+
+const accountMenuButton = byId("account-menu-button");
+const accountMenu = byId("account-menu");
+function setAccountMenu(open) {
+  accountMenu.hidden = !open;
+  accountMenuButton.setAttribute("aria-expanded", String(open));
+}
+accountMenuButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setAccountMenu(accountMenu.hidden);
+});
+document.addEventListener("click", (event) => {
+  if (!byId("account").contains(event.target)) setAccountMenu(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setAccountMenu(false);
+});
+accountMenu.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-workspace-settings]")) {
+    setAccountMenu(false);
+    renderWorkspaceSettings();
+    byId("workspace-settings").showModal();
+  }
+  if (!event.target.closest("[data-signout]")) return;
   await api("/api/signout", { method: "POST", body: "{}" });
   location.href = "/";
+});
+
+byId("live-view-permission").addEventListener("click", (event) => {
+  if (event.target.closest("[data-live-view-cancel]")) {
+    pendingLiveView = null;
+    byId("live-view-permission").close();
+  }
+});
+byId("live-view-permission").querySelector("[data-live-view-confirm]").addEventListener("click", async (event) => {
+  if (!pendingLiveView) return;
+  const confirmButton = event.currentTarget;
+  confirmButton.disabled = true;
+  try {
+    const connectorId = pendingLiveView.connectorId;
+    pendingLiveView = null;
+    byId("live-view-permission").close();
+    await activateLiveView(connectorId);
+  } catch (error) {
+    byId("live-view-permission").close();
+    const notice = byId("notice");
+    notice.textContent = error.message;
+    notice.hidden = false;
+  } finally {
+    confirmButton.disabled = false;
+  }
+});
+byId("workspace-settings").querySelector("[data-settings-close]").addEventListener("click", () => {
+  byId("workspace-settings").close();
 });
 
 refresh();

@@ -40,8 +40,9 @@ class FakeRuntime:
     def __init__(self):
         self.finished = []
         self.provider = None
+        self.live_view_status = "granted"
 
-    def start_connection(self, user_id, connector_id):
+    def start_connection(self, user_id, connector_id, requested_scopes=None):
         return {
             "type": "oauth_redirect",
             "connector_id": connector_id,
@@ -58,6 +59,24 @@ class FakeRuntime:
             "columns": ["Name"],
             "rows": [["Plan.md"]],
             "source": connector_id,
+        }
+
+    def live_view_access(self, user_id, connector_id):
+        return {
+            "status": self.live_view_status,
+            "connector_id": connector_id,
+            "connector_name": "Google Drive",
+            "operation": "list_recent_files",
+            "logo": "/static/assets/google-drive.png",
+            "required_scopes": ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+            "missing_scopes": [],
+            "permission": {
+                "summary": "Read-only Drive view",
+                "data": ["File metadata"],
+                "actions": ["Refresh files"],
+                "revocation": "Remove access in Google Account settings.",
+                "authorize_label": "Continue with Google",
+            },
         }
 
     def finish_connection(self, user_id, connector_id, setup_result):
@@ -81,7 +100,13 @@ class FakeRuntime:
         }
 
     def decorate_artifact(self, user_id, artifact):
-        return artifact
+        if artifact.get("source") != "google_drive":
+            return artifact
+        return {
+            **artifact,
+            "connector_name": "Google Drive",
+            "live_view": self.live_view_access(user_id, "google_drive"),
+        }
 
 
 class RecordingWorkspaceClient:
@@ -396,6 +421,39 @@ class ApplicationJourneyTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual([("user-secret", "gpt-5-mini")], self.agent_factory_calls)
+
+    def test_live_view_refreshes_a_verified_connector_artifact(self):
+        self.register()
+        self.app.extensions["cordia_store"].save_connection(
+            1,
+            "google_drive",
+            "verified",
+            {
+                "access_token": "provider-access-token",
+                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
+            },
+        )
+
+        response = self.client.post(
+            "/api/connectors/live-view", json={"connector_id": "google_drive"}
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("granted", response.json["live_view"]["status"])
+        self.assertEqual("Plan.md", response.json["artifact"]["rows"][0][0])
+
+    def test_live_view_returns_setup_instead_of_artifact_when_authorization_is_missing(self):
+        self.register()
+        self.runtime.live_view_status = "needs_authorization"
+
+        response = self.client.post(
+            "/api/connectors/live-view", json={"connector_id": "google_drive"}
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("needs_authorization", response.json["live_view"]["status"])
+        self.assertEqual("oauth_redirect", response.json["setup_card"]["type"])
+        self.assertNotIn("artifact", response.json)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,7 @@ class Store:
                     state_hash TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     connector_id TEXT NOT NULL,
+                    requested_scopes TEXT NOT NULL DEFAULT '[]',
                     expires_at TEXT NOT NULL,
                     used_at TEXT
                 );
@@ -164,6 +165,14 @@ class Store:
             if "kind" not in message_columns:
                 connection.execute(
                     "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'"
+                )
+            oauth_state_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(oauth_states)").fetchall()
+            }
+            if "requested_scopes" not in oauth_state_columns:
+                connection.execute(
+                    "ALTER TABLE oauth_states ADD COLUMN requested_scopes TEXT NOT NULL DEFAULT '[]'"
                 )
 
     @staticmethod
@@ -523,16 +532,49 @@ class Store:
             artifacts.append(artifact)
         return artifacts
 
-    def create_oauth_state(self, user_id: int, connector_id: str, minutes: int = 10) -> str:
+    def create_oauth_state(
+        self,
+        user_id: int,
+        connector_id: str,
+        minutes: int = 10,
+        requested_scopes: list[str] | None = None,
+    ) -> str:
         state = secrets.token_urlsafe(32)
         state_hash = hashlib.sha256(state.encode()).hexdigest()
         expires_at = self._now() + timedelta(minutes=minutes)
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO oauth_states(state_hash, user_id, connector_id, expires_at) VALUES (?, ?, ?, ?)",
-                (state_hash, user_id, connector_id, expires_at.isoformat()),
+                """
+                INSERT INTO oauth_states(
+                    state_hash, user_id, connector_id, requested_scopes, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    state_hash,
+                    user_id,
+                    connector_id,
+                    json.dumps(requested_scopes or []),
+                    expires_at.isoformat(),
+                ),
             )
         return state
+
+    def oauth_requested_scopes(self, user_id: int, connector_id: str, state: str) -> list[str]:
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        now = self._now().isoformat()
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT requested_scopes FROM oauth_states
+                WHERE state_hash = ? AND user_id = ? AND connector_id = ?
+                  AND used_at IS NULL AND expires_at > ?
+                """,
+                (state_hash, user_id, connector_id, now),
+            ).fetchone()
+        if not row:
+            return []
+        scopes = json.loads(row["requested_scopes"])
+        return [str(scope) for scope in scopes if scope]
 
     def consume_oauth_state(self, user_id: int, connector_id: str, state: str) -> bool:
         state_hash = hashlib.sha256(state.encode()).hexdigest()

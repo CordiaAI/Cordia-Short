@@ -1,57 +1,42 @@
-# Cordia Short Design QA
+# Cordia Short LiveView Design QA
 
-- Source visual truth path: unavailable; the earlier Cordia workspace reference was a temporary conversation attachment that no longer exists on disk.
-- Implementation screenshot: `cordia-short-browser.png`
-- Browser: Codex in-app browser
-- CSS viewport: 1265 x 720
-- Implementation pixels: 1264 x 1000 full-page capture
-- Density normalization: not applicable; no accessible source capture exists for normalization.
-- State: signed-in user after Surveyor, real OpenAI Google Drive proposal, missing-Google-credentials setup card.
+- Source visual truth: `C:\Users\jacks\AppData\Local\Temp\codex-clipboard-5cfb8b55-3bee-4385-b769-8362ffd7abdb.png`
+- Browser: Chrome DevTools MCP, isolated local QA context
+- Viewport: 1600 x 900 CSS pixels
+- State: signed-in user, Surveyor complete, one Google Drive artifact, LiveView permission accepted
 
-## Full-view comparison evidence
+## Visual comparison
 
-Blocked. The implementation was captured from the browser, but the source image could not be opened. No visual-fidelity comparison is claimed.
+The annotated source and the implementation were inspected together at the same desktop state.
 
-## Focused region comparison evidence
-
-Blocked for the same reason. The implemented chat rail, setup card, empty artifact area, and workspace memory were inspected directly, but not compared against an accessible source crop.
+- Cordia brand and `My Workspace` remain in the top bar.
+- The requested disabled `Back to Cordia` control occupies the highlighted top-bar position.
+- Standalone Sign out is replaced by the CordiaCode account avatar and matching seven-item menu.
+- The assistant avatar, workspace eyebrow, workspace subtitle, and DashView pill are removed.
+- Duplicate connector/model windows are absent from the canvas.
+- The remaining connector window uses the official Google Drive logo and a Live View control.
+- Selected model configuration is kept in Workspace settings rather than the artifact canvas.
 
 ## Functional browser evidence
 
-- Signed in with a synthetic local QA account.
-- Submitted all five Surveyor answers in the same left conversation.
-- Observed the saved `memory.md` content in the workspace.
-- Sent `Connect Google Drive` through the real OpenAI-backed Cordia Agent.
-- Observed a generic connector setup card reporting `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as missing.
-- Reloaded the full page and confirmed the setup card remained visible from persisted workspace state.
-- Checked browser warning and error logs: none observed.
+- Created an isolated local QA account and completed all five Surveyor prompts.
+- Confirmed Enter submits the focused composer.
+- Created a Google Drive artifact through the real Cordia app route using a deterministic QA connector transport.
+- Opened the production-style LiveView permission dialog and accepted it.
+- Confirmed the same artifact window refreshed and entered `Live View on` state without creating a duplicate.
+- Opened the profile menu and verified: Your profile, Certification, Assessment, Billing, Workspace, Feedback, Sign out.
+- Opened Workspace settings and verified the model configuration surface is separated from the artifact canvas.
+- Injected an unselected model artifact and verified its explicit `workspace_settings` surface kept it off the canvas while remaining available in Workspace settings.
+- Exercised a non-redirect connector setup response and verified LiveView stayed off, the setup card remained visible, and the real configuration message was shown.
+- Refreshed granted LiveView data and verified the existing Google Drive window was updated in place (`windows: 1`) and changed to `Live View on`.
+- Browser console after the final LiveView flow: no messages.
+- Lighthouse snapshot: Accessibility 100, Best Practices 100, SEO 100, Agentic Browsing 100.
 
-## Findings
+## Permission boundary
 
-- P1: Exact visual fidelity cannot be evaluated without the source reference image.
-  - Impact: The workspace is functional, but cannot be declared a faithful recreation of the selected target.
-  - Fix: Reattach the reference image, capture the same signed-in workspace state at the same viewport, compare them together, and correct P0-P2 differences.
-- P1: The real Google Drive connected and artifact-populated states cannot yet be captured.
-  - Impact: The most important dashboard state remains externally blocked.
-  - Fix: Configure the Google OAuth web client, complete real authorization, run `list_recent_files`, and capture the populated artifact state.
+- Google Drive LiveView is Cordia-rendered provider data, not an embedded Google page.
+- The initial contract is read-only metadata access using the already declared Google OAuth scope.
+- If a connector lacks required scopes, the backend returns only the missing declared scopes and begins incremental provider authorization.
+- The permission dialog states the data used, actions allowed, and revocation path before activation.
 
-## Required fidelity surfaces
-
-- Fonts and typography: implementation inspected; source comparison blocked.
-- Spacing and layout rhythm: implementation inspected at 1265 x 720; source comparison blocked.
-- Colors and visual tokens: ivory, sage, olive, paper, and sand tokens are present; source sampling blocked.
-- Image quality and asset fidelity: no raster imagery is used in the current core workspace; the previous source cannot be checked for required assets.
-- Copy and content: functional copy is visible and explicit about missing configuration; source comparison blocked.
-
-## Comparison history
-
-- Pass 1: implementation captured and interactions verified; comparison blocked because the source reference attachment is unavailable. No fidelity fixes were made from unsupported inference.
-
-## Implementation checklist
-
-- Reattach the Cordia workspace reference image.
-- Configure Google OAuth credentials.
-- Capture the verified connector and populated artifact state.
-- Run source-versus-implementation comparison and fix P0-P2 differences.
-
-final result: blocked
+final result: pass

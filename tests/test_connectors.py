@@ -35,6 +35,20 @@ class ConnectorRegistryTests(unittest.TestCase):
         )
         self.assertEqual("list_models", CONNECTORS["openai_api"]["post_connect_operation"])
 
+    def test_google_drive_declares_connector_neutral_live_view_contract(self):
+        validate_registry()
+        live_view = CONNECTORS["google_drive"]["live_view"]
+
+        self.assertEqual("list_recent_files", live_view["operation"])
+        self.assertEqual("/static/assets/google-drive.png", live_view["logo"])
+        self.assertEqual(
+            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+            live_view["required_scopes"],
+        )
+        self.assertTrue(live_view["permission"]["data"])
+        self.assertTrue(live_view["permission"]["actions"])
+        self.assertEqual("Continue with Google", live_view["permission"]["authorize_label"])
+
     def test_malformed_record_is_rejected(self):
         malformed = {
             "broken": {
@@ -183,6 +197,132 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.assertTrue(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
         self.assertFalse(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
 
+    def test_live_view_access_is_derived_from_verified_provider_scopes(self):
+        self.store.save_connection(
+            self.user_id,
+            "google_drive",
+            "verified",
+            {
+                "access_token": "provider-access-token",
+                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
+            },
+        )
+
+        access = self.runtime().live_view_access(self.user_id, "google_drive")
+
+        self.assertEqual("granted", access["status"])
+        self.assertEqual("list_recent_files", access["operation"])
+        self.assertNotIn("provider-access-token", json.dumps(access))
+
+    def test_live_view_access_requests_only_missing_declared_scopes(self):
+        self.store.save_connection(
+            self.user_id,
+            "google_drive",
+            "verified",
+            {"access_token": "provider-access-token", "scope": "openid"},
+        )
+
+        access = self.runtime().live_view_access(self.user_id, "google_drive")
+        setup = self.runtime().start_connection(
+            self.user_id, "google_drive", requested_scopes=access["missing_scopes"]
+        )
+        query = parse_qs(urlparse(setup["action_url"]).query)
+
+        self.assertEqual("needs_authorization", access["status"])
+        self.assertEqual(
+            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+            access["missing_scopes"],
+        )
+        self.assertIn("https://www.googleapis.com/auth/drive.metadata.readonly", query["scope"][0])
+        self.assertEqual(["true"], query["include_granted_scopes"])
+
+    def test_incremental_oauth_retains_requested_scopes_when_provider_omits_scope(self):
+        self.store.save_connection(
+            self.user_id,
+            "google_drive",
+            "verified",
+            {
+                "access_token": "old-access-token",
+                "refresh_token": "old-refresh-token",
+                "scope": "openid",
+            },
+        )
+
+        def transport_without_scope(method, url, headers, data, timeout):
+            if url == "https://oauth2.googleapis.com/token":
+                return {
+                    "access_token": "new-access-token",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                }
+            return self.transport(method, url, headers, data, timeout)
+
+        runtime = ConnectorRuntime(
+            self.store, env=self.env, transport=transport_without_scope
+        )
+        access = runtime.live_view_access(self.user_id, "google_drive")
+        setup = runtime.start_connection(
+            self.user_id,
+            "google_drive",
+            requested_scopes=access["missing_scopes"],
+        )
+        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
+
+        runtime.finish_connection(
+            self.user_id, "google_drive", {"state": state, "code": "provider-code"}
+        )
+
+        credentials = self.store.connection_credentials(self.user_id, "google_drive")
+        self.assertEqual("old-refresh-token", credentials["refresh_token"])
+        self.assertNotIn("openid", credentials["scope"].split())
+        self.assertIn(
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+            credentials["scope"].split(),
+        )
+        self.assertEqual(
+            "granted", runtime.live_view_access(self.user_id, "google_drive")["status"]
+        )
+
+    def test_corrupt_connector_secret_does_not_hide_saved_workspace(self):
+        self.store.save_connection(
+            self.user_id,
+            "google_drive",
+            "verified",
+            {"access_token": "provider-access-token", "scope": "openid"},
+        )
+        with closing(sqlite3.connect(self.db_path)) as database:
+            database.execute(
+                "UPDATE connections SET credentials = ? WHERE user_id = ? AND connector_id = ?",
+                ("corrupt-ciphertext", self.user_id, "google_drive"),
+            )
+            database.commit()
+
+        access = self.runtime().live_view_access(self.user_id, "google_drive")
+
+        self.assertEqual("needs_connection", access["status"])
+        self.assertEqual(
+            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+            access["missing_scopes"],
+        )
+
+        setup = self.runtime().start_connection(
+            self.user_id,
+            "google_drive",
+            requested_scopes=access["missing_scopes"],
+        )
+        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
+        result = self.runtime().finish_connection(
+            self.user_id,
+            "google_drive",
+            {"state": state, "code": "replacement-provider-code"},
+        )
+
+        self.assertEqual("verified", result["status"])
+        self.assertEqual(
+            "provider-access-token",
+            self.store.connection_credentials(self.user_id, "google_drive")["access_token"],
+        )
+
     def test_missing_oauth_configuration_is_explicit(self):
         setup = ConnectorRuntime(self.store, env={}, transport=self.transport).start_connection(
             self.user_id, "google_drive"
@@ -271,6 +411,7 @@ class ConnectorRuntimeTests(unittest.TestCase):
             selected,
         )
         self.assertEqual("gpt-5-mini", decorated["active_value"])
+        self.assertEqual("workspace_settings", decorated["surface"])
         self.assertEqual(
             {
                 "endpoint": "/api/connectors/select",

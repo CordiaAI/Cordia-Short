@@ -44,6 +44,40 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("--sage", css)
         self.assertIn("--olive", css)
 
+    def test_workspace_shell_matches_the_approved_navigation_contract(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="back-to-cordia"', html)
+        self.assertIn('id="account-menu-button"', html)
+        self.assertIn('id="account-menu"', html)
+        self.assertIn('id="workspace-settings"', html)
+        self.assertNotIn('id="signout-button"', html)
+        self.assertNotIn('id="workspace-subtitle"', html)
+        self.assertNotIn('class="view-pill"', html)
+        self.assertNotIn('class="assistant-mark">C</span>', html)
+
+    def test_live_view_uses_provider_logo_permission_dialog_and_no_iframe(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="live-view-permission"', html)
+        self.assertIn("data-live-view", javascript)
+        self.assertIn("connector-logo", javascript)
+        self.assertIn("/api/connectors/live-view", javascript)
+        self.assertIn('sessionStorage.setItem("cordia-live-view-return"', javascript)
+        self.assertIn("renderWorkspaceSettings", javascript)
+        self.assertNotIn("iframe", (html + javascript).lower())
+
+    def test_model_catalog_stays_in_settings_and_live_view_never_claims_false_success(self):
+        javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'artifact.surface !== "workspace_settings"', javascript
+        )
+        self.assertIn("if (state.setup_card)", javascript)
+        self.assertIn("if (!state.artifact) throw new Error", javascript)
+        self.assertIn("activateLiveView(resumeLiveView).catch", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()
