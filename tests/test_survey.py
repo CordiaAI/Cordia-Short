@@ -101,6 +101,36 @@ class SurveyManifestTests(unittest.TestCase):
         self.assertEqual("Do not have a good imagination.", prompts[-1])
         self.assertTrue(all(item["options"] == [1, 2, 3, 4, 5] for item in schema["questions"]))
 
+    def test_manifest_includes_source_instructions_and_browser_option_metadata(self):
+        part_one = public_stage_schema("assessment_part_1")
+        self.assertEqual(
+            "Describe yourself as you generally are now, not as you wish to be in the future. Describe yourself as you honestly see yourself, in relation to other people you know of the same sex and age. Rate each statement from 1 (Very Inaccurate) to 5 (Very Accurate).",
+            part_one["instructions"],
+        )
+        self.assertEqual(
+            [{"id": 1, "label": "1 (Very Inaccurate)"}, {"id": 2, "label": "2"}, {"id": 3, "label": "3"}, {"id": 4, "label": "4"}, {"id": 5, "label": "5 (Very Accurate)"}],
+            part_one["rating_options"],
+        )
+        part_two = public_stage_schema("assessment_part_2")
+        self.assertEqual("Pick 1-2 areas where you'd bring real context to an AI conversation.", part_two["instructions"])
+        self.assertEqual("There are no right answers — pick whichever feels closest to how you actually operate.", public_stage_schema("assessment_part_3")["instructions"])
+        self.assertEqual("Write 2-3 things you'd actually type to an AI assistant if you were using one right now for something real — not test questions, actual requests you'd send.", public_stage_schema("assessment_part_4")["instructions"])
+        discovery = public_stage_schema("workspace_discovery")
+        fields = {field["id"]: field for field in discovery["fields"]}
+        self.assertEqual(
+            [{"id": "suggest_actions_only", "label": "Suggest actions only"}, {"id": "prepare_for_approval", "label": "Prepare work for approval"}, {"id": "perform_approved_actions", "label": "Perform approved actions"}, {"id": "automate_low_risk", "label": "Automate low-risk actions"}],
+            fields["control_level"]["options"],
+        )
+        conditional = discovery["conditional_fields"]
+        self.assertEqual(
+            [{"id": "personal", "label": "personal"}, {"id": "financial", "label": "financial"}, {"id": "health", "label": "health"}, {"id": "legal", "label": "legal"}, {"id": "employee", "label": "employee"}, {"id": "confidential", "label": "confidential"}],
+            conditional["sensitive_data"]["options"],
+        )
+        self.assertEqual(
+            [{"id": "web", "label": "web"}, {"id": "desktop", "label": "desktop"}, {"id": "local_files", "label": "local files"}, {"id": "company_network", "label": "a company network"}, {"id": "cloud_services", "label": "cloud services"}, {"id": "mobile_devices", "label": "mobile devices"}],
+            conditional["environment"]["options"],
+        )
+
     def test_domain_terms_match_the_source(self):
         schema = public_stage_schema("assessment_part_2")
         self.assertEqual(
@@ -192,6 +222,20 @@ class SurveyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "familiarity"):
             validate_stage("assessment_part_2", payload)
 
+    def test_choice_fields_reject_unhashable_client_values_with_value_error(self):
+        payload = valid_part_two_payload()
+        payload["domains"] = [["technology_software"]]
+        with self.assertRaisesRegex(ValueError, "unknown domain"):
+            validate_stage("assessment_part_2", payload)
+        payload = valid_part_three_payload()
+        payload["briefing_style"] = ["requirements_upfront"]
+        with self.assertRaisesRegex(ValueError, "briefing_style"):
+            validate_stage("assessment_part_3", payload)
+        payload = valid_part_three_payload()
+        payload["most"] = {"choice": "logical"}
+        with self.assertRaisesRegex(ValueError, "MOST and LEAST"):
+            validate_stage("assessment_part_3", payload)
+
     def test_part_three_normalizes_all_choices(self):
         result = validate_stage("assessment_part_3", valid_part_three_payload())
         self.assertEqual(valid_part_three_payload(), result["answers"])
@@ -234,6 +278,16 @@ class SurveyValidationTests(unittest.TestCase):
         payload = valid_discovery_payload()
         payload["applications"] = [copy.deepcopy(payload["applications"][0]) for _ in range(21)]
         with self.assertRaisesRegex(ValueError, "20 applications"):
+            validate_stage("workspace_discovery", payload)
+
+    def test_workspace_discovery_rejects_inactive_conditional_fields(self):
+        payload = valid_discovery_payload()
+        payload["failure_behavior"] = "Tell me and stop."
+        with self.assertRaisesRegex(ValueError, "inactive conditional field: failure_behavior"):
+            validate_stage("workspace_discovery", payload)
+        payload = valid_discovery_payload()
+        payload["sensitive_data_details"] = "Financial statements."
+        with self.assertRaisesRegex(ValueError, "inactive conditional field: sensitive_data_details"):
             validate_stage("workspace_discovery", payload)
 
     def test_unknown_and_computed_stages_are_rejected(self):

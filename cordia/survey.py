@@ -71,6 +71,36 @@ PART_4_FIELDS = (
     {"id": "request_2", "label": "Request 2", "required": True, "max_length": 2000},
     {"id": "request_3", "label": "Request 3", "required": False, "max_length": 2000},
 )
+RATING_OPTIONS = (
+    {"id": 1, "label": "1 (Very Inaccurate)"},
+    {"id": 2, "label": "2"},
+    {"id": 3, "label": "3"},
+    {"id": 4, "label": "4"},
+    {"id": 5, "label": "5 (Very Accurate)"},
+)
+CONTROL_LEVEL_OPTIONS = (
+    {"id": "suggest_actions_only", "label": "Suggest actions only"},
+    {"id": "prepare_for_approval", "label": "Prepare work for approval"},
+    {"id": "perform_approved_actions", "label": "Perform approved actions"},
+    {"id": "automate_low_risk", "label": "Automate low-risk actions"},
+)
+CONTROL_LEVEL_IDS = tuple(option["id"] for option in CONTROL_LEVEL_OPTIONS)
+SENSITIVE_DATA_OPTIONS = (
+    {"id": "personal", "label": "personal"},
+    {"id": "financial", "label": "financial"},
+    {"id": "health", "label": "health"},
+    {"id": "legal", "label": "legal"},
+    {"id": "employee", "label": "employee"},
+    {"id": "confidential", "label": "confidential"},
+)
+ENVIRONMENT_OPTIONS = (
+    {"id": "web", "label": "web"},
+    {"id": "desktop", "label": "desktop"},
+    {"id": "local_files", "label": "local files"},
+    {"id": "company_network", "label": "a company network"},
+    {"id": "cloud_services", "label": "cloud services"},
+    {"id": "mobile_devices", "label": "mobile devices"},
+)
 
 DISCOVERY_FIELDS = (
     {"id": "outcome", "label": "What is the first meaningful result you want this workspace to produce?", "required": True},
@@ -79,7 +109,7 @@ DISCOVERY_FIELDS = (
     {"id": "applications", "label": "Which applications are involved?", "required": True},
     {"id": "inputs", "label": "What information starts this workflow?", "required": True},
     {"id": "outputs", "label": "What should Cordia produce or change?", "required": True},
-    {"id": "control_level", "label": "Control level", "required": True, "options": ("suggest_actions_only", "prepare_for_approval", "perform_approved_actions", "automate_low_risk")},
+    {"id": "control_level", "label": "Control level", "required": True, "options": CONTROL_LEVEL_OPTIONS},
     {"id": "first_workspace", "label": "Which part should Cordia build first?", "required": True},
 )
 CONDITIONAL_DISCOVERY_FIELDS = {
@@ -88,9 +118,9 @@ CONDITIONAL_DISCOVERY_FIELDS = {
     "scale": {"label": "Roughly how many files, records, customers, or requests are involved?"},
     "people_roles": {"label": "Who creates, reviews, approves, or receives the work?"},
     "permissions": {"label": "What may Cordia read, create, edit, send, or execute?"},
-    "sensitive_data": {"label": "Does the workflow involve personal, financial, health, legal, employee, or confidential information?"},
+    "sensitive_data": {"label": "Does the workflow involve personal, financial, health, legal, employee, or confidential information?", "options": SENSITIVE_DATA_OPTIONS},
     "sensitive_data_details": {"label": "What sensitive data is involved and how should it be handled?"},
-    "environment": {"label": "Does the work happen on the web, desktop, local files, a company network, cloud services, or mobile devices?"},
+    "environment": {"label": "Does the work happen on the web, desktop, local files, a company network, cloud services, or mobile devices?", "options": ENVIRONMENT_OPTIONS},
     "failure_behavior": {"label": "What should happen if the automation fails?"},
     "approval_boundaries": {"label": "What actions need approval before Cordia performs them?"},
     "deadline": {"label": "Is there a deadline or response-time requirement?"},
@@ -127,10 +157,10 @@ def public_stage_schema(stage: str, answers: dict | None = None) -> dict:
     if isinstance(discovery, dict) and isinstance(discovery.get("answers"), dict):
         discovery = discovery["answers"]
     schemas = {
-        "assessment_part_1": {"title": "Part 1 of 4: About you", "questions": PART_1},
-        "assessment_part_2": {"title": "Part 2 of 4: Your domains", "domains": DOMAINS, "domain_limit": {"minimum": 1, "maximum": 2}},
-        "assessment_part_3": {"title": "Part 3 of 4: How you communicate", "questions": tuple(part_3_questions)},
-        "assessment_part_4": {"title": "Part 4 of 4: In your own words", "fields": PART_4_FIELDS},
+        "assessment_part_1": {"title": "Part 1 of 4: About you", "instructions": "Describe yourself as you generally are now, not as you wish to be in the future. Describe yourself as you honestly see yourself, in relation to other people you know of the same sex and age. Rate each statement from 1 (Very Inaccurate) to 5 (Very Accurate).", "rating_options": RATING_OPTIONS, "questions": PART_1},
+        "assessment_part_2": {"title": "Part 2 of 4: Your domains", "instructions": "Pick 1-2 areas where you'd bring real context to an AI conversation.", "domains": DOMAINS, "domain_limit": {"minimum": 1, "maximum": 2}},
+        "assessment_part_3": {"title": "Part 3 of 4: How you communicate", "instructions": "There are no right answers — pick whichever feels closest to how you actually operate.", "questions": tuple(part_3_questions)},
+        "assessment_part_4": {"title": "Part 4 of 4: In your own words", "instructions": "Write 2-3 things you'd actually type to an AI assistant if you were using one right now for something real — not test questions, actual requests you'd send.", "fields": PART_4_FIELDS},
         "profile_snapshot": {"title": "Profile snapshot", "computed": True},
         "workspace_discovery": {"title": "Workspace Discovery", "fields": DISCOVERY_FIELDS, "conditional_fields": CONDITIONAL_DISCOVERY_FIELDS, "active_conditional_fields": conditional_discovery_fields(discovery)},
         "workspace_review": {"title": "Workspace Review", "computed": True},
@@ -173,8 +203,10 @@ def _validate_part_1(payload: dict) -> dict:
 def _validate_part_2(payload: dict) -> dict:
     _reject_unexpected(payload, {"domains", "ratings", "familiarity"})
     domains, ratings, familiarity = payload.get("domains"), payload.get("ratings"), payload.get("familiarity")
-    if not isinstance(domains, list) or not 1 <= len(domains) <= 2 or len(set(domains)) != len(domains):
+    if not isinstance(domains, list) or not 1 <= len(domains) <= 2:
         raise ValueError("select 1 or 2 domains")
+    if not all(isinstance(domain, str) for domain in domains) or len(set(domains)) != len(domains):
+        raise ValueError("unknown domain")
     if any(domain not in DOMAINS for domain in domains):
         raise ValueError("unknown domain")
     if not isinstance(ratings, dict) or set(ratings) != set(domains):
@@ -205,11 +237,11 @@ def _validate_part_3(payload: dict) -> dict:
             continue
         choices = {choice[0] for choice in question["options"]}
         value = payload[question["id"]]
-        if value not in choices:
+        if not isinstance(value, str) or value not in choices:
             raise ValueError(f"{question['id']} has an unknown option")
         clean[question["id"]] = value
     words = set(next(question for question in PART_3 if question["id"] == "most_least")["options"])
-    if payload["most"] not in words or payload["least"] not in words:
+    if not isinstance(payload["most"], str) or not isinstance(payload["least"], str) or payload["most"] not in words or payload["least"] not in words:
         raise ValueError("MOST and LEAST must be valid choices")
     if payload["most"] == payload["least"]:
         raise ValueError("MOST and LEAST must be different")
@@ -236,7 +268,7 @@ def _validate_application(application: dict) -> dict:
         raise ValueError("application use choices must be booleans")
     if not application["already_uses"] and not application["wants_added"]:
         raise ValueError("application must be already used or wanted")
-    if application["control_level"] not in {field["options"] for field in DISCOVERY_FIELDS if field["id"] == "control_level"}.pop():
+    if not isinstance(application["control_level"], str) or application["control_level"] not in CONTROL_LEVEL_IDS:
         raise ValueError("application control_level is invalid")
     return {"application_id": application_id.strip() if isinstance(application_id, str) else None, "name": _text(application["name"], "application name", 400), "already_uses": application["already_uses"], "wants_added": application["wants_added"], "current_activities": _text(application["current_activities"], "current_activities", 4000), "desired_activities": _text(application["desired_activities"], "desired_activities", 4000), "inputs_outputs": _text(application["inputs_outputs"], "inputs_outputs", 4000), "control_level": application["control_level"]}
 
@@ -247,8 +279,7 @@ def _validate_workspace_discovery(payload: dict) -> dict:
     _reject_unexpected(payload, core_ids | conditional_ids)
     if not core_ids <= set(payload):
         raise ValueError("all Workspace Discovery core fields are required")
-    control_options = next(field["options"] for field in DISCOVERY_FIELDS if field["id"] == "control_level")
-    if payload["control_level"] not in control_options:
+    if not isinstance(payload["control_level"], str) or payload["control_level"] not in CONTROL_LEVEL_IDS:
         raise ValueError("control_level is invalid")
     applications = payload["applications"]
     if not isinstance(applications, list) or not applications:
@@ -258,14 +289,21 @@ def _validate_workspace_discovery(payload: dict) -> dict:
     clean = {field_id: _text(payload[field_id], field_id, 4000) for field_id in ("outcome", "success_criteria", "current_workflow", "inputs", "outputs", "first_workspace")}
     clean["applications"] = [_validate_application(application) for application in applications]
     clean["control_level"] = payload["control_level"]
-    for field_id in conditional_ids & set(payload):
+    trigger_ids = {"sensitive_data", "environment"}
+    for field_id in trigger_ids & set(payload):
         value = payload[field_id]
-        if field_id in ("sensitive_data", "environment"):
-            if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-                raise ValueError(f"{field_id} must be a list of choices")
-            clean[field_id] = [item.strip() for item in value]
-        else:
-            clean[field_id] = _text(value, field_id, 4000)
+        allowed_options = SENSITIVE_DATA_OPTIONS if field_id == "sensitive_data" else ENVIRONMENT_OPTIONS
+        allowed_ids = {option["id"] for option in allowed_options}
+        if not isinstance(value, list) or not all(isinstance(item, str) and item in allowed_ids for item in value):
+            raise ValueError(f"{field_id} must be a list of valid choices")
+        clean[field_id] = list(value)
+    active_conditional_ids = set(conditional_discovery_fields(clean))
+    supplied_conditional_ids = conditional_ids & set(payload) - trigger_ids
+    inactive = supplied_conditional_ids - active_conditional_ids
+    if inactive:
+        raise ValueError("inactive conditional field: " + sorted(inactive)[0])
+    for field_id in active_conditional_ids & set(payload):
+        clean[field_id] = _text(payload[field_id], field_id, 4000)
     return clean
 
 
