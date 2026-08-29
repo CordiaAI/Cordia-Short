@@ -1,6 +1,8 @@
 import copy
 import unittest
 
+from cordia.connectors import CONNECTORS
+from cordia.onboarding import compile_documents, score_profile
 from cordia.survey import (
     SCHEMA_VERSION,
     STAGE_ORDER,
@@ -74,6 +76,37 @@ def valid_discovery_payload():
         "outputs": "A status report.",
         "control_level": "prepare_for_approval",
         "first_workspace": "A report drafting workspace.",
+    }
+
+
+def valid_stages():
+    discovery = valid_discovery_payload()
+    discovery["applications"].append({
+        "application_id": None,
+        "name": "Team Notes",
+        "already_uses": True,
+        "wants_added": True,
+        "current_activities": "Keep planning notes.",
+        "desired_activities": "Organize the planning notes.",
+        "inputs_outputs": "Notes in, organized plan out.",
+        "control_level": "prepare_for_approval",
+    })
+    part_three = valid_part_three_payload()
+    part_three.update({
+        "briefing_style": "gist_then_correct",
+        "reply_preference": "infer_context",
+        "flawed_plan": "state_plainly",
+        "answer_order": "answer_first",
+        "background_assumption": "infer_from_context",
+        "edit_boundary": "flag_likely_problems",
+        "bad_idea": "say_so_directly",
+    })
+    return {
+        "assessment_part_1": validate_stage("assessment_part_1", valid_part_one_payload()),
+        "assessment_part_2": validate_stage("assessment_part_2", valid_part_two_payload()),
+        "assessment_part_3": validate_stage("assessment_part_3", part_three),
+        "assessment_part_4": validate_stage("assessment_part_4", valid_part_four_payload()),
+        "workspace_discovery": validate_stage("workspace_discovery", discovery),
     }
 
 
@@ -312,3 +345,120 @@ class SurveyValidationTests(unittest.TestCase):
             ["sensitive_data_details", "failure_behavior", "approval_boundaries", "environment_policy"],
             fields,
         )
+
+
+class ProfileCompilerTests(unittest.TestCase):
+    def test_part_one_reverse_scoring_is_normalized(self):
+        stages = valid_stages()
+        stages["assessment_part_1"]["answers"]["answers"] = {
+            f"p1_{number:02d}": 5 for number in range(1, 21)
+        }
+
+        profile = score_profile(stages)
+
+        self.assertEqual(5.0, profile["traits"]["social_energy"])
+        self.assertEqual(2.5, profile["traits"]["imagination_abstraction"])
+
+    def test_part_three_votes_compile_to_ternary_axes(self):
+        profile = score_profile(valid_stages())
+
+        self.assertEqual(
+            {"context": 1, "scope": 1, "directness": 1, "implementation": 1},
+            profile["operator_axes"],
+        )
+
+    def test_split_votes_resolve_to_balanced(self):
+        stages = valid_stages()
+        stages["assessment_part_3"]["answers"].update({
+            "flawed_plan": "state_plainly",
+            "bad_idea": "soften_heavily",
+        })
+
+        self.assertEqual(0, score_profile(stages)["operator_axes"]["directness"])
+
+    def test_most_and_least_are_evidence_not_hidden_axis_votes(self):
+        stages = valid_stages()
+        stages["assessment_part_3"]["answers"].update({
+            "most": "imaginative",
+            "least": "logical",
+        })
+
+        profile = score_profile(stages)
+
+        self.assertEqual(1, profile["operator_axes"]["scope"])
+        self.assertEqual(
+            {"most": "imaginative", "least": "logical"},
+            profile["evidence"]["most_least"],
+        )
+
+    def test_compiler_creates_all_three_readable_documents(self):
+        documents = compile_documents(valid_stages(), [], CONNECTORS)
+
+        self.assertEqual({"operator.md", "connectors.md", "fde.md"}, set(documents))
+        self.assertIn("Context interpretation: Implicit / high-context (1)", documents["operator.md"])
+        self.assertIn("## Prompt examples", documents["operator.md"])
+        self.assertIn("p1_01", documents["operator.md"])
+        self.assertIn("Status: setup_required", documents["connectors.md"])
+        self.assertIn("Status: planned", documents["connectors.md"])
+        self.assertIn("## Smallest valuable workspace slice", documents["fde.md"])
+
+    def test_selected_application_never_compiles_as_verified_without_runtime_status(self):
+        documents = compile_documents(valid_stages(), [], CONNECTORS)
+
+        self.assertNotIn("Status: verified", documents["connectors.md"])
+
+    def test_runtime_owned_connection_status_is_preserved(self):
+        for status in ("verified", "needs_attention"):
+            with self.subTest(status=status):
+                documents = compile_documents(
+                    valid_stages(), [], CONNECTORS, {"google_drive": status}
+                )
+                self.assertIn(f"Status: {status}", documents["connectors.md"])
+
+    def test_aliases_normalize_and_application_activity_is_preserved(self):
+        stages = valid_stages()
+        application = stages["workspace_discovery"]["answers"]["applications"][0]
+        application["application_id"] = None
+        application["name"] = "GDrive"
+
+        documents = compile_documents(stages, [], CONNECTORS)
+
+        self.assertIn("Registry ID: google_drive", documents["connectors.md"])
+        self.assertIn("Current activities: Store weekly notes.", documents["connectors.md"])
+        self.assertIn("Desired Cordia activities: Collect the source notes.", documents["connectors.md"])
+
+    def test_adjustments_overlay_baseline_in_response_order(self):
+        documents = compile_documents(valid_stages(), [
+            {"response_id": 9, "label": "Reason first", "axis": "implementation", "previous": 1, "current": -1},
+            {"response_id": 12, "label": "Give me the implementation", "axis": "implementation", "previous": -1, "current": 1},
+        ], CONNECTORS)
+
+        self.assertIn("Implementation preference: Answer/action-first (1)", documents["operator.md"])
+        self.assertLess(documents["operator.md"].index("Response 9"), documents["operator.md"].index("Response 12"))
+        self.assertIn("changed from 1 to -1", documents["operator.md"])
+
+    def test_fde_marks_work_as_proposed_and_omits_unsupplied_constraints(self):
+        documents = compile_documents(valid_stages(), [], CONNECTORS)
+
+        self.assertIn("Proposed first future workflow", documents["fde.md"])
+        self.assertNotIn("## Failure behavior", documents["fde.md"])
+        self.assertNotIn("## Security and sensitivity constraints", documents["fde.md"])
+
+    def test_fde_includes_active_security_and_failure_constraints(self):
+        stages = valid_stages()
+        discovery = stages["workspace_discovery"]["answers"]
+        discovery.update({
+            "control_level": "automate_low_risk",
+            "sensitive_data": ["financial"],
+            "sensitive_data_details": "Keep financial statements private.",
+            "failure_behavior": "Tell me and stop.",
+            "approval_boundaries": "Approve sending the report.",
+        })
+
+        documents = compile_documents(stages, [], CONNECTORS)
+
+        self.assertIn("## Security and sensitivity constraints", documents["fde.md"])
+        self.assertIn("Keep financial statements private.", documents["fde.md"])
+        self.assertIn("## Failure behavior", documents["fde.md"])
+        self.assertIn("Tell me and stop.", documents["fde.md"])
+        self.assertIn("Approve sending the report.", documents["fde.md"])
