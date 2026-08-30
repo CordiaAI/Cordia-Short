@@ -139,10 +139,11 @@ def _display_axis(axis: str, value: int) -> str:
     return f"{AXIS_LABELS[axis][value]} ({value})"
 
 
-def _overlay_adjustments(baseline: dict[str, int], adjustments: list[dict]) -> tuple[dict[str, int], list[dict]]:
+def overlay_operator_adjustments(baseline: dict[str, int], adjustments: list[dict]) -> tuple[dict[str, int], list[dict]]:
+    """Apply explicit overrides in the chronological order supplied by the store."""
     axes = dict(baseline)
     applied = []
-    for adjustment in sorted(adjustments, key=lambda item: item.get("response_id", 0)):
+    for adjustment in adjustments:
         axis, current = adjustment.get("axis"), adjustment.get("current")
         if axis in axes and not isinstance(current, bool) and current in {-1, 0, 1}:
             axes[axis] = current
@@ -151,7 +152,7 @@ def _overlay_adjustments(baseline: dict[str, int], adjustments: list[dict]) -> t
 
 
 def _render_operator(profile: dict, adjustments: list[dict]) -> str:
-    axes, applied_adjustments = _overlay_adjustments(profile["operator_axes"], adjustments)
+    axes, applied_adjustments = overlay_operator_adjustments(profile["operator_axes"], adjustments)
     lines = [
         "# Cordia operator profile",
         "",

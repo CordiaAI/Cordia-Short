@@ -14,7 +14,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from cordia.connectors import CONNECTORS
-from cordia.onboarding import compile_documents, score_profile
+from cordia.onboarding import compile_documents, overlay_operator_adjustments, score_profile
 from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
 
@@ -506,6 +506,10 @@ class Store:
         )
 
     def operator_profile(self, user_id: int) -> dict[str, int]:
+        if self.survey_complete(user_id):
+            baseline = score_profile(self.onboarding_stages(user_id))["operator_axes"]
+            profile, _ = overlay_operator_adjustments(baseline, self._operator_adjustments(user_id))
+            return profile
         with self._connection() as connection:
             row = connection.execute(
                 "SELECT context, scope, directness, implementation FROM operator_profiles WHERE user_id = ?",
@@ -607,15 +611,7 @@ class Store:
             ).fetchone()
             if not response:
                 raise LookupError("assistant response not found")
-            row = connection.execute(
-                "SELECT context, scope, directness, implementation FROM operator_profiles WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-            current_profile = (
-                {name: int(row[name]) for name in OPERATOR_AXES}
-                if row
-                else {name: 0 for name in OPERATOR_AXES}
-            )
+            current_profile = self.operator_profile(user_id)
             previous = current_profile[axis]
             current = previous if previous == target else previous + (1 if target > previous else -1)
             current_profile[axis] = current

@@ -271,7 +271,8 @@ class ApplicationJourneyTests(unittest.TestCase):
             "/api/onboarding/assessment_part_1", json=self.onboarding_stages()[0][1]
         )
         for stage, payload in self.onboarding_stages()[1:]:
-            self.assertEqual(200, self.client.put(f"/api/onboarding/{stage}", json=payload).status_code)
+            discovery_saved = self.client.put(f"/api/onboarding/{stage}", json=payload)
+            self.assertEqual(200, discovery_saved.status_code)
         state = self.client.get("/api/onboarding")
         onboarding = state.json["onboarding"]
         completed = self.client.post("/api/onboarding/complete")
@@ -289,7 +290,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual(onboarding["selected_applications"], onboarding["review"]["selected_applications"])
         self.assertEqual(onboarding["selected_applications"], completed.json.get("selected_applications"))
         self.assertNotIn("auth_kind", selected)
-        for response in (saved, state, completed):
+        for response in (saved, discovery_saved, state, completed):
             body = response.get_data(as_text=True)
             self.assertNotIn("client_secret_env", body)
             self.assertNotIn("GOOGLE_CLIENT_SECRET", body)
@@ -380,10 +381,11 @@ class ApplicationJourneyTests(unittest.TestCase):
 
         self.assertEqual(200, retried.status_code)
         self.assertEqual("implementation", retried.json["adjustment"]["axis"])
-        self.assertEqual(1, retried.json["adjustment"]["current"])
-        self.assertIn("Implementation preference: Answer/action-first (1)", retried.json["operator"])
+        self.assertEqual(-1, retried.json["adjustment"]["previous"])
+        self.assertEqual(0, retried.json["adjustment"]["current"])
+        self.assertIn("Implementation preference: Balanced (0)", retried.json["operator"])
         retry_operator, retry_messages = self.agent.calls[-1]
-        self.assertIn("Implementation preference: Answer/action-first (1)", retry_operator)
+        self.assertIn("Implementation preference: Balanced (0)", retry_operator)
         self.assertIn("# Selected applications", retry_operator)
         self.assertIn("# First workspace plan", retry_operator)
         self.assertEqual("Give me the plan", retry_messages[-1]["content"])

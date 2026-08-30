@@ -8,9 +8,11 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from app import create_app
+from cordia.agent import Agent
 from cordia.connectors import CONNECTORS
 from cordia.connector_runtime import ConnectorRuntime
 from cordia.store import Store
+from tests.test_app import RecordingWorkspaceClient
 
 
 def valid_part_one_payload():
@@ -79,14 +81,18 @@ def valid_discovery_payload():
     }
 
 
-def save_all_stages(store, user_id):
-    for stage, payload in (
+def complete_onboarding_payloads():
+    return dict((
         ("assessment_part_1", valid_part_one_payload()),
         ("assessment_part_2", valid_part_two_payload()),
         ("assessment_part_3", valid_part_three_payload()),
         ("assessment_part_4", valid_part_four_payload()),
         ("workspace_discovery", valid_discovery_payload()),
-    ):
+    ))
+
+
+def save_all_stages(store, user_id):
+    for stage, payload in complete_onboarding_payloads().items():
         store.save_onboarding_stage(user_id, stage, payload)
 
 
@@ -565,6 +571,169 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertEqual("Current.md", artifacts[0]["rows"][0][0])
 
 
+class OnboardingServiceJourneyTests(unittest.TestCase):
+    """Real API/Store/compiler/Agent; model transport and workspace MCP are doubles."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.model_requests = []
+        self.workspace = RecordingWorkspaceClient()
+        agent = Agent("test-model-key", transport=self.model_transport)
+        self.app = create_app(
+            {
+                "TESTING": True,
+                "DATABASE": root / "cordia.db",
+                "WORKSPACE_ROOT": root / "workspaces",
+                "SESSION_COOKIE_SECURE": False,
+            },
+            agent=agent,
+            workspace_client=self.workspace,
+        )
+        self.store = self.app.extensions["cordia_store"]
+        self.workspace.store = self.store
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def model_transport(self, url, headers, payload, timeout):
+        self.model_requests.append(payload)
+        connecting = "connect" in payload["input"][-1]["content"].lower()
+        return {"output_text": json.dumps({
+            "action": "propose_connector" if connecting else "speak",
+            "message": "Authorize Google Drive in the setup card." if connecting else "Review the report plan.",
+            "connector_id": "google_drive" if connecting else None,
+            "operation_id": None,
+        })}
+
+    def register_and_complete(self):
+        registered = self.client.post("/api/register", json={
+            "email": "journey@example.com", "password": "correct-horse-battery",
+        })
+        self.assertEqual(201, registered.status_code)
+        self.assertEqual("onboarding", registered.json["state"])
+        return self.complete_via_api()
+
+    def complete_via_api(self):
+        for stage, payload in complete_onboarding_payloads().items():
+            saved = self.client.put(f"/api/onboarding/{stage}", json=payload)
+            self.assertEqual(200, saved.status_code, saved.json)
+        self.assertEqual([], self.model_requests)
+        self.assertEqual([], self.workspace.calls)
+        completed = self.client.post("/api/onboarding/complete")
+        self.assertEqual(200, completed.status_code, completed.json)
+        self.assertEqual("workspace", completed.json["state"])
+        self.assertEqual([], self.model_requests)
+        self.assertEqual([], self.workspace.calls)
+        return completed.json
+
+    def test_register_to_compiled_workspace_to_connector_proposal(self):
+        completed = self.register_and_complete()
+        workspace = Path(self.temp.name) / "workspaces" / "1"
+        documents = {name: (workspace / name).read_text(encoding="utf-8")
+                     for name in ("operator.md", "connectors.md", "fde.md")}
+        self.assertIn("Prompt examples", documents["operator.md"])
+        self.assertIn("Help me plan today.", documents["operator.md"])
+        self.assertIn("Google Drive", documents["connectors.md"])
+        self.assertIn("Status: setup_required", documents["connectors.md"])
+        self.assertIn("Smallest valuable workspace slice", documents["fde.md"])
+        self.assertIsNone(completed["setup_card"])
+        self.assertEqual("setup_required", completed["selected_applications"][0]["status"])
+        self.assertIsNone(self.store.connection_status(1, "google_drive"))
+        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
+
+        chat = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
+
+        self.assertEqual(200, chat.status_code, chat.json)
+        self.assertEqual("google_drive", chat.json["setup_card"]["connector_id"])
+        self.assertEqual("oauth_redirect", chat.json["setup_card"]["type"])
+        self.assertTrue(chat.json["setup_card"]["action_url"].startswith("https://accounts.google.com/"))
+        self.assertEqual(chat.json["setup_card"], self.client.get("/api/state").json["setup_card"])
+        self.assertEqual([(1, "connector_start", {"connector_id": "google_drive"})], self.workspace.calls)
+        self.assertEqual(1, len(self.model_requests))
+        model_context = "\n".join(item["content"] for item in self.model_requests[0]["input"] if item["role"] == "developer")
+        for document in documents.values():
+            self.assertIn(document, model_context)
+        self.assertIsNone(self.store.connection_status(1, "google_drive"))
+        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
+
+    def test_legacy_migration_preserves_runtime_records_and_explicit_override(self):
+        user_id = self.store.register("legacy@example.com", "correct-horse-battery")
+        for field, value in {"name": "Jordan", "role": "Operator", "goal": "Weekly reports", "apps": "Google Drive", "communication": "Direct"}.items():
+            self.store.save_survey_answer(user_id, field, value)
+        self.store.add_message(user_id, "user", "Use more context.")
+        response_id = self.store.add_message(user_id, "assistant", "Review the report plan.", kind="agent")
+        self.store.adjust_operator(user_id, response_id, "context", 1, "Use more context")
+        self.store.save_artifact(user_id, {"type": "table", "title": "Existing work", "columns": ["Name"], "rows": [["Plan.md"]], "source": "google_drive"})
+        self.store.save_connection(user_id, "google_drive", "verified", {"access_token": "legacy-drive-token"})
+        self.store.save_connection(user_id, "openai_api", "verified", {"api_key": "legacy-model-key"})
+        self.store.save_connection_setting(user_id, "openai_api", "model", "gpt-5-mini")
+        self.store.save_connection_setting(user_id, "__runtime__", "agent_model", "openai_api")
+        tables = ("messages", "operator_adjustments", "operator_profiles", "artifacts", "connections", "connection_settings")
+        with closing(sqlite3.connect(self.store.db_path)) as connection:
+            before = {table: connection.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,)).fetchall() for table in tables}
+
+        logged_in = self.client.post("/api/signin", json={"email": "legacy@example.com", "password": "correct-horse-battery"})
+        self.assertEqual(200, logged_in.status_code)
+        self.assertEqual("onboarding", logged_in.json["state"])
+        self.assertEqual(2, logged_in.json["onboarding"]["schema_version"])
+        self.assertEqual("assessment_part_1", logged_in.json["onboarding"]["current_stage"])
+        completed = self.complete_via_api()
+
+        with closing(sqlite3.connect(self.store.db_path)) as connection:
+            after = {table: connection.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,)).fetchall() for table in tables}
+        self.assertEqual(before, after)
+        self.assertEqual("Jordan", self.store.survey_answers(user_id)["name"])
+        self.assertEqual({"provider": "OpenAI API", "model": "gpt-5-mini", "source": "connector"}, completed["agent_runtime"])
+        self.assertEqual("verified", completed["selected_applications"][0]["status"])
+        operator = self.store.operator_markdown(user_id)
+        self.assertIn("Context interpretation: Implicit / high-context (1)", operator)
+        self.assertIn(f"Response {response_id}: Use more context", operator)
+        self.assertIn("Scope preference: Detail-first (-1)", operator)
+        self.assertEqual({"context": 1, "scope": -1, "directness": 1, "implementation": -1}, self.store.operator_profile(user_id))
+        connectors = (self.store.workspace_root / str(user_id) / "connectors.md").read_text(encoding="utf-8")
+        self.assertIn("Status: verified", connectors)
+        self.assertNotIn("legacy-drive-token", connectors)
+        self.assertNotIn("legacy-model-key", json.dumps(completed))
+
+    def test_first_feedback_steps_from_survey_baseline_and_retry_receives_effective_axes(self):
+        self.register_and_complete()
+        original = self.client.post("/api/chat", json={"message": "Plan my report"})
+        response_id = original.json["messages"][-1]["id"]
+        self.assertIn("Context interpretation: Explicit / literal (-1)", original.json["operator"])
+
+        adjusted = self.client.post(f"/api/responses/{response_id}/adjust", json={"axis": "context", "target": 1})
+
+        self.assertEqual(200, adjusted.status_code, adjusted.json)
+        self.assertEqual(-1, adjusted.json["adjustment"]["previous"])
+        self.assertEqual(0, adjusted.json["adjustment"]["current"])
+        self.assertEqual(0, self.store.operator_profile(1)["context"])
+        self.assertIn("Context interpretation: Balanced (0)", adjusted.json["operator"])
+        self.assertIn("Context interpretation: Balanced (0)", self.model_requests[-1]["input"][2]["content"])
+        self.assertEqual("Plan my report", self.model_requests[-1]["input"][-1]["content"])
+        for previous, current in ((0, 1), (1, 1)):
+            followup = self.client.post(f"/api/responses/{response_id}/adjust", json={"axis": "context", "target": 1})
+            self.assertEqual(200, followup.status_code, followup.json)
+            self.assertEqual((previous, current), (followup.json["adjustment"]["previous"], followup.json["adjustment"]["current"]))
+
+    def test_feedback_on_older_response_wins_by_adjustment_chronology(self):
+        self.register_and_complete()
+        older = self.client.post("/api/chat", json={"message": "Plan my report"}).json["messages"][-1]["id"]
+        newer = self.client.post("/api/chat", json={"message": "Review my report"}).json["messages"][-1]["id"]
+        for response_id, target, previous, current in ((older, 1, 1, 1), (newer, -1, 1, 0), (older, -1, 0, -1)):
+            adjusted = self.client.post(f"/api/responses/{response_id}/adjust", json={"axis": "directness", "target": target})
+            self.assertEqual(200, adjusted.status_code, adjusted.json)
+            self.assertEqual((previous, current), (adjusted.json["adjustment"]["previous"], adjusted.json["adjustment"]["current"]))
+
+        self.assertEqual(-1, adjusted.json["adjustment"]["current"])
+        self.assertIn("Directness preference: Measured / indirect (-1)", adjusted.json["operator"])
+        self.assertEqual(-1, self.store.operator_profile(1)["directness"])
+        self.assertIn("Directness preference: Measured / indirect (-1)", self.model_requests[-1]["input"][2]["content"])
+        self.store.complete_onboarding(1, CONNECTORS)
+        self.assertEqual(adjusted.json["operator"], self.store.operator_markdown(1))
+
+
 class ScriptedConnectorAgent:
     def respond(self, memory, messages):
         if "connect" in messages[-1]["content"].lower():
@@ -639,10 +808,9 @@ class RealMCPConnectorJourneyTests(unittest.TestCase):
             json={"email": "person@example.com", "password": "correct horse battery"},
         )
         self.assertEqual(201, register.status_code)
-        store = self.app.extensions["cordia_store"]
-        user_id = store.authenticate("person@example.com", "correct horse battery")
-        save_all_stages(store, user_id)
-        store.complete_onboarding(user_id, CONNECTORS)
+        for stage, payload in complete_onboarding_payloads().items():
+            self.assertEqual(200, self.client.put(f"/api/onboarding/{stage}", json=payload).status_code)
+        self.assertEqual(200, self.client.post("/api/onboarding/complete").status_code)
 
         setup = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
         state = parse_qs(urlparse(setup.json["setup_card"]["action_url"]).query)["state"][0]
