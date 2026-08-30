@@ -16,6 +16,12 @@ async function api(path, options = {}) {
   return payload;
 }
 
+const onboardingController = window.CordiaOnboarding.createController({
+  root: byId("onboarding"),
+  api,
+  onComplete: (state) => render(state),
+});
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -159,6 +165,16 @@ function renderWorkspaceSettings() {
     : `<p class="settings-summary">Connect a model provider to manage it here.</p>`;
 }
 
+function renderSelectedApplications(applications = []) {
+  const container = byId("selected-applications");
+  const statuses = { requested: "Requested", planned: "Planned", setup_required: "Setup required", verified: "Verified", needs_attention: "Needs attention" };
+  container.hidden = !applications.length;
+  container.innerHTML = applications.length ? `
+    <h2 id="selected-applications-title">Selected applications</h2>
+    <p>Planning context. Setup required and planned applications are not connected.</p>
+    ${applications.map((application) => `<div class="selected-application-row"><strong>${escapeHtml(application.name)}</strong><span class="application-status">${escapeHtml(statuses[application.status] || "Requested")}</span></div>`).join("")}` : "";
+}
+
 function openLiveViewPermission(artifact) {
   const liveView = artifact.live_view;
   pendingLiveView = { connectorId: artifact.source };
@@ -203,27 +219,32 @@ async function activateLiveView(connectorId) {
 function render(state, transient = {}) {
   currentState = state;
   const signedOut = state.state === "signed_out";
+  const isOnboarding = state.state === "onboarding";
+  document.querySelector(".topbar").hidden = isOnboarding;
   byId("auth-panel").hidden = !signedOut;
-  byId("app-shell").hidden = signedOut;
-  byId("account").hidden = signedOut;
+  byId("app-shell").hidden = signedOut || isOnboarding;
+  byId("account").hidden = signedOut || isOnboarding;
   const agentRuntime = state.agent_runtime;
   byId("status-pill").textContent = signedOut
     ? "Signed out"
-    : state.state === "survey"
+    : isOnboarding
       ? "Surveyor"
       : agentRuntime
         ? `Agent online · ${agentRuntime.provider} · ${agentRuntime.model}`
         : "Agent online";
-  if (signedOut) return;
+  if (signedOut) { onboardingController.hide(); return; }
+  if (isOnboarding) {
+    onboardingController.show(state.onboarding).catch((error) => { byId("onboarding-error").textContent = error.message; });
+    return;
+  }
+  onboardingController.hide();
 
   renderMessages(state.messages, state.state === "workspace");
   renderArtifacts(state.artifacts);
+  renderSelectedApplications(state.selected_applications);
   renderSetupCard(transient.setup_card || state.setup_card || null);
   byId("operator").textContent = state.operator || "Cordia is still learning how you work.";
-  const survey = state.survey;
-  byId("survey-prompt").hidden = !survey;
-  byId("survey-prompt").textContent = survey ? survey.question : "";
-  byId("message-input").placeholder = survey ? "Answer Surveyor…" : "Message Cordia…";
+  byId("message-input").placeholder = "Message Cordia…";
   const nameMatch = (state.operator || "").match(/## Name\s+([^#\n][^\n]*)/);
   byId("workspace-title").textContent = nameMatch ? `${nameMatch[1]}'s workspace` : "Your workspace";
   byId("account-initial").textContent = nameMatch ? nameMatch[1].trim().charAt(0).toUpperCase() : "∞";
@@ -297,9 +318,7 @@ composer.addEventListener("submit", async (event) => {
   input.disabled = true;
   renderPendingMessage(message);
   try {
-    const path = currentState.state === "survey" ? "/api/survey" : "/api/chat";
-    const body = currentState.state === "survey" ? { answer: message } : { message };
-    const state = await api(path, { method: "POST", body: JSON.stringify(body) });
+    const state = await api("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
     render(state, state);
   } catch (error) {
     render(error.payload || currentState);

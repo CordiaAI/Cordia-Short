@@ -1,4 +1,7 @@
 import unittest
+import subprocess
+import sys
+import os
 from pathlib import Path
 
 
@@ -19,7 +22,6 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("function renderSetupCard", javascript)
         self.assertIn("function renderArtifact", javascript)
         self.assertIn("state.setup_card", javascript)
-        self.assertIn("/api/survey", javascript)
         self.assertIn("/api/chat", javascript)
         self.assertIn("credential_form", javascript)
         self.assertIn("/api/connectors/setup", javascript)
@@ -43,6 +45,42 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("--ivory", css)
         self.assertIn("--sage", css)
         self.assertIn("--olive", css)
+
+    def test_onboarding_layer_and_script_are_present(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="onboarding"', html)
+        self.assertIn('/static/onboarding.js', html)
+        layer = html.split('id="onboarding"', 1)[1].split('<section id="auth-panel"', 1)[0]
+        self.assertIn('aria-labelledby="onboarding-title"', layer)
+        self.assertIn('id="onboarding-title" tabindex="-1"', layer)
+        self.assertIn('id="onboarding-progress"', layer)
+        self.assertIn('aria-live="assertive"', layer)
+        self.assertIn('id="onboarding-back"', layer)
+        self.assertIn('id="onboarding-continue"', layer)
+        self.assertNotIn('type="password"', layer)
+        self.assertIn('/static/assets/cordia-logo-header.webp', layer)
+
+    def test_onboarding_controller_uses_stage_and_completion_endpoints(self):
+        path = ROOT / "static" / "onboarding.js"
+        self.assertTrue(path.exists(), "onboarding controller is missing")
+        script = path.read_text(encoding="utf-8")
+        self.assertIn('PUT', script)
+        self.assertIn('/api/onboarding/', script)
+        self.assertIn('/api/onboarding/complete', script)
+        self.assertNotIn('localStorage', script)
+
+    def test_chat_composer_no_longer_posts_survey_answers(self):
+        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('"/api/survey"', script)
+        self.assertNotIn('Answer Surveyor', script)
+
+    def test_onboarding_controller_behavior(self):
+        result = subprocess.run(
+            ["node", "--test", "tests/onboarding.test.cjs"],
+            cwd=ROOT, text=True, capture_output=True,
+            env={**os.environ, "CORDIA_TEST_PYTHON": sys.executable},
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_workspace_shell_matches_the_approved_navigation_contract(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")

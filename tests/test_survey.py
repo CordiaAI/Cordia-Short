@@ -219,10 +219,44 @@ class SurveyManifestTests(unittest.TestCase):
                 "answers": {"control_level": "automate_low_risk"},
             }
         })
-        self.assertEqual(["failure_behavior", "approval_boundaries"], schema["active_conditional_fields"])
+        self.assertEqual(["cadence", "permissions", "failure_behavior", "approval_boundaries"], schema["active_conditional_fields"])
 
 
 class SurveyValidationTests(unittest.TestCase):
+    def test_all_optional_discovery_followups_are_reachable_from_core_answers(self):
+        payload = valid_discovery_payload()
+        payload.update({
+            "current_workflow": "Our team reviews customer records every week under company policy.",
+            "success_criteria": "Ready before the Friday deadline.",
+            "control_level": "automate_low_risk",
+            "sensitive_data": ["financial"], "environment": ["company_network"],
+        })
+        active = conditional_discovery_fields(payload)
+        for field in ("source_locations", "cadence", "scale", "people_roles", "permissions", "deadline", "policies"):
+            self.assertIn(field, active)
+        for field in active:
+            payload[field] = "A detail for " + field
+        normalized = validate_stage("workspace_discovery", payload)["answers"]
+        self.assertEqual(payload, normalized)
+        schema = public_stage_schema("workspace_discovery", payload)
+        for field in active:
+            self.assertTrue(schema["conditional_fields"][field]["when_any"])
+
+    def test_optional_followups_can_be_blank_but_core_cannot(self):
+        payload = valid_discovery_payload()
+        payload["source_locations"] = ""
+        normalized = validate_stage("workspace_discovery", payload)["answers"]
+        self.assertEqual("", normalized["source_locations"])
+        payload["outcome"] = ""
+        with self.assertRaisesRegex(ValueError, "outcome is required"):
+            validate_stage("workspace_discovery", payload)
+
+    def test_discovery_core_changes_deactivate_followups(self):
+        self.assertNotIn("cadence", conditional_discovery_fields({"current_workflow": "One task."}))
+        self.assertIn("cadence", conditional_discovery_fields({"current_workflow": "Every week I review it."}))
+        self.assertNotIn("policies", conditional_discovery_fields({"environment": ["web"]}))
+        self.assertIn("policies", conditional_discovery_fields({"environment": ["company_network"]}))
+
     def test_part_one_normalizes_answers(self):
         result = validate_stage("assessment_part_1", valid_part_one_payload())
         self.assertEqual(SCHEMA_VERSION, result["schema_version"])
@@ -342,12 +376,26 @@ class SurveyValidationTests(unittest.TestCase):
             "environment": ["cloud_services", "company_network"],
         })
         self.assertEqual(
-            ["sensitive_data_details", "failure_behavior", "approval_boundaries", "environment_policy"],
+            ["cadence", "permissions", "sensitive_data_details", "failure_behavior", "approval_boundaries", "policies", "environment_policy"],
             fields,
         )
 
 
 class ProfileCompilerTests(unittest.TestCase):
+    def test_all_collected_optional_details_are_preserved_in_fde(self):
+        stages = valid_stages()
+        details = {
+            "source_locations": "Drive folder weekly-notes",
+            "cadence": "Every Friday", "scale": "Twenty records",
+            "people_roles": "Jack reviews and Sarah approves",
+            "permissions": "Read notes and create a draft only",
+            "deadline": "Before 5pm", "policies": "No external sharing",
+        }
+        stages["workspace_discovery"]["answers"].update(details)
+        fde = compile_documents(stages, [], CONNECTORS)["fde.md"]
+        for detail in details.values():
+            self.assertIn(detail, fde)
+
     def test_part_one_reverse_scoring_is_normalized(self):
         stages = valid_stages()
         stages["assessment_part_1"]["answers"]["answers"] = {

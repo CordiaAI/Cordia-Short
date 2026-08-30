@@ -287,6 +287,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("Collect the source notes.", selected["desired_activities"])
         self.assertEqual("verified", selected["status"])
         self.assertEqual(onboarding["selected_applications"], onboarding["review"]["selected_applications"])
+        self.assertEqual(onboarding["selected_applications"], completed.json.get("selected_applications"))
         self.assertNotIn("auth_kind", selected)
         for response in (saved, state, completed):
             body = response.get_data(as_text=True)

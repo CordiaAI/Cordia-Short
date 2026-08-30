@@ -38,7 +38,6 @@
         <div><strong>Cordia Agent</strong><small>Shape the work. Keep the source of truth.</small></div>
       </div>
       <div id="messages" class="messages" aria-live="polite"></div>
-      <div id="survey-prompt" class="survey-prompt" hidden></div>
       <form id="composer" class="composer">
         <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?"></textarea>
         <button type="submit">Send</button>
@@ -51,6 +50,7 @@
       </div>
       <div id="notice" class="notice" hidden></div>
       <section id="setup-card" class="setup-card" hidden></section>
+      <section id="selected-applications" class="selected-applications" aria-labelledby="selected-applications-title" hidden></section>
       <section id="artifact-grid" class="artifact-grid" aria-live="polite"></section>
       <section class="memory-card">
         <div><small>OPERATOR PROFILE</small><h2>How Cordia understands your communication</h2></div>
@@ -58,6 +58,23 @@
       </section>
     </section>
   </main>
+
+  <section id="onboarding" class="onboarding" hidden aria-labelledby="onboarding-title">
+    <header class="onboarding-brand"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia"></header>
+    <main class="onboarding-panel">
+      <p id="onboarding-progress" class="onboarding-progress" aria-live="polite"></p>
+      <h1 id="onboarding-title" tabindex="-1"></h1>
+      <p id="onboarding-instructions" class="onboarding-instructions"></p>
+      <form id="onboarding-form">
+        <div id="onboarding-fields"></div>
+        <p id="onboarding-error" role="alert" aria-live="assertive"></p>
+        <div class="onboarding-actions" role="group" aria-label="Onboarding navigation">
+          <button id="onboarding-back" class="quiet-button" type="button">BACK</button>
+          <button id="onboarding-continue" class="primary-button" type="submit">CONTINUE</button>
+        </div>
+      </form>
+    </main>
+  </section>
 
   <section id="auth-panel" class="auth-panel">
     <div class="auth-card">
@@ -106,6 +123,7 @@
     </div>
   </dialog>
 
+  <script src="/static/onboarding.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

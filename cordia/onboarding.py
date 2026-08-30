@@ -241,6 +241,13 @@ def _render_fde(discovery: dict, applications: list[dict]) -> str:
     ])
     if discovery.get("approval_boundaries"):
         lines.append(discovery["approval_boundaries"])
+    for field, heading in (
+        ("source_locations", "Source locations"), ("cadence", "Workflow cadence"),
+        ("scale", "Workflow scale"), ("people_roles", "People and roles"),
+        ("permissions", "Requested permissions"),
+    ):
+        if discovery.get(field):
+            lines.extend(["", f"## {heading}", discovery[field]])
     if discovery.get("sensitive_data") or discovery.get("sensitive_data_details"):
         lines.extend(["", "## Security and sensitivity constraints"])
         if discovery.get("sensitive_data"):

@@ -112,20 +112,23 @@ DISCOVERY_FIELDS = (
     {"id": "control_level", "label": "Control level", "required": True, "options": CONTROL_LEVEL_OPTIONS},
     {"id": "first_workspace", "label": "Which part should Cordia build first?", "required": True},
 )
+WORKFLOW_TEXT_FIELDS = ("outcome", "success_criteria", "current_workflow", "inputs", "outputs", "first_workspace")
+ACTION_CONTROL = {"field": "control_level", "test": "one_of", "values": ("perform_approved_actions", "automate_low_risk")}
+
 CONDITIONAL_DISCOVERY_FIELDS = {
-    "source_locations": {"label": "Where are the relevant documents, records, or messages?"},
-    "cadence": {"label": "Is this occasional, daily, continuous, or event-triggered?"},
-    "scale": {"label": "Roughly how many files, records, customers, or requests are involved?"},
-    "people_roles": {"label": "Who creates, reviews, approves, or receives the work?"},
-    "permissions": {"label": "What may Cordia read, create, edit, send, or execute?"},
+    "source_locations": {"label": "Where are the relevant documents, records, or messages?", "when_any": ({"field": "inputs", "test": "present"},)},
+    "cadence": {"label": "Is this occasional, daily, continuous, or event-triggered?", "when_any": ({"fields": WORKFLOW_TEXT_FIELDS, "test": "contains_any", "values": ("daily", "weekly", "monthly", "every", "recurring", "continuous", "trigger", "routine")}, {"field": "control_level", "test": "one_of", "values": ("automate_low_risk",)})},
+    "scale": {"label": "Roughly how many files, records, customers, or requests are involved?", "when_any": ({"field": "inputs", "test": "present"},)},
+    "people_roles": {"label": "Who creates, reviews, approves, or receives the work?", "when_any": ({"fields": WORKFLOW_TEXT_FIELDS, "test": "contains_any", "values": ("team", "colleague", "customer", "client", "review", "approv", "send", "receive", "share")}, {"field": "control_level", "test": "one_of", "values": ("prepare_for_approval", "perform_approved_actions")})},
+    "permissions": {"label": "What may Cordia read, create, edit, send, or execute?", "when_any": ({"field": "control_level", "test": "present"},)},
     "sensitive_data": {"label": "Does the workflow involve personal, financial, health, legal, employee, or confidential information?", "options": SENSITIVE_DATA_OPTIONS},
-    "sensitive_data_details": {"label": "What sensitive data is involved and how should it be handled?"},
+    "sensitive_data_details": {"label": "What sensitive data is involved and how should it be handled?", "when_any": ({"field": "sensitive_data", "test": "present"},)},
     "environment": {"label": "Does the work happen on the web, desktop, local files, a company network, cloud services, or mobile devices?", "options": ENVIRONMENT_OPTIONS},
-    "failure_behavior": {"label": "What should happen if the automation fails?"},
-    "approval_boundaries": {"label": "What actions need approval before Cordia performs them?"},
-    "deadline": {"label": "Is there a deadline or response-time requirement?"},
-    "policies": {"label": "Are there company policies, compliance rules, preferred providers, or prohibited tools?"},
-    "environment_policy": {"label": "What environment or policy constraints should Cordia respect?"},
+    "failure_behavior": {"label": "What should happen if the automation fails?", "when_any": (ACTION_CONTROL,)},
+    "approval_boundaries": {"label": "What actions need approval before Cordia performs them?", "when_any": (ACTION_CONTROL,)},
+    "deadline": {"label": "Is there a deadline or response-time requirement?", "when_any": ({"fields": WORKFLOW_TEXT_FIELDS, "test": "contains_any", "values": ("deadline", "due", "before", "urgent", "response", "turnaround", "friday", "by ")},)},
+    "policies": {"label": "Are there company policies, compliance rules, preferred providers, or prohibited tools?", "when_any": ({"field": "sensitive_data", "test": "present"}, {"field": "environment", "test": "one_of", "values": ("company_network",)}, {"fields": WORKFLOW_TEXT_FIELDS, "test": "contains_any", "values": ("policy", "policies", "compliance", "prohibited", "regulated", "company")})},
+    "environment_policy": {"label": "What environment or policy constraints should Cordia respect?", "when_any": ({"field": "environment", "test": "present"},)},
 }
 
 
@@ -303,7 +306,7 @@ def _validate_workspace_discovery(payload: dict) -> dict:
     if inactive:
         raise ValueError("inactive conditional field: " + sorted(inactive)[0])
     for field_id in active_conditional_ids & set(payload):
-        clean[field_id] = _text(payload[field_id], field_id, 4000)
+        clean[field_id] = _text(payload[field_id], field_id, 4000, required=False)
     return clean
 
 
@@ -324,16 +327,18 @@ def next_stage(saved_stages: dict[str, dict]) -> str | None:
 
 
 def conditional_discovery_fields(discovery: dict) -> list[str]:
-    """Return stable conditional field identifiers from saved core answers only."""
+    """Evaluate the same declarative rules supplied to browser visibility."""
     if not isinstance(discovery, dict):
         return []
-    fields = []
-    sensitive = discovery.get("sensitive_data", [])
-    if isinstance(sensitive, list) and any(item in {"personal", "financial", "health", "legal", "employee", "confidential"} for item in sensitive):
-        fields.append("sensitive_data_details")
-    if discovery.get("control_level") in {"perform_approved_actions", "automate_low_risk"}:
-        fields.extend(("failure_behavior", "approval_boundaries"))
-    environment = discovery.get("environment", [])
-    if isinstance(environment, list) and environment:
-        fields.append("environment_policy")
-    return fields
+    def matches(rule):
+        value = discovery.get(rule.get("field"))
+        if rule["test"] == "present":
+            return bool(value.strip()) if isinstance(value, str) else isinstance(value, list) and bool(value)
+        if rule["test"] == "one_of":
+            values = value if isinstance(value, list) else [value]
+            return any(item in rule["values"] for item in values)
+        if rule["test"] == "contains_any":
+            text = " ".join(discovery.get(field, "") for field in rule["fields"] if isinstance(discovery.get(field, ""), str)).lower()
+            return any(word in text for word in rule["values"])
+        return False
+    return [field for field, metadata in CONDITIONAL_DISCOVERY_FIELDS.items() if any(matches(rule) for rule in metadata.get("when_any", ()))]

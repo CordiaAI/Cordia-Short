@@ -135,6 +135,7 @@ def create_app(
             return {"state": "onboarding", "onboarding": onboarding}
         return {
             "state": "workspace",
+            "selected_applications": onboarding.get("selected_applications", []),
             "operator": store.operator_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": [
