@@ -100,9 +100,27 @@ def create_app(
                 for connector_id in CONNECTORS
                 if (status := store.connection_status(user_id, connector_id)) is not None
             }
-            selected = normalize_applications(
+            normalized = normalize_applications(
                 discovery.get("applications", []), CONNECTORS, statuses
             )
+            selected = [
+                {
+                    field: application[field]
+                    for field in (
+                        "application_id",
+                        "name",
+                        "already_uses",
+                        "wants_added",
+                        "current_activities",
+                        "desired_activities",
+                        "inputs_outputs",
+                        "control_level",
+                        "registry_id",
+                        "status",
+                    )
+                }
+                for application in normalized
+            ]
             onboarding["selected_applications"] = selected
             if onboarding.get("review"):
                 onboarding["review"]["selected_applications"] = selected

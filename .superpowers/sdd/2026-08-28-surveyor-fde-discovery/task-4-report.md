@@ -64,3 +64,22 @@ Result: application suite passed 26 tests; full suite passed 131 tests; diff che
 ## Concerns
 
 None.
+
+## Review-fix round 1
+
+### Fixed public selected-application projection
+
+`normalize_applications()` intentionally carries compiler-only `auth_kind` metadata. The onboarding API now explicitly projects only validated user-entered application fields plus `registry_id` and runtime-derived `status`; it does not return `auth_kind` or connector configuration.
+
+### Regression coverage
+
+The selected-applications API test now records representative encrypted-connection input values and asserts that `GET /api/onboarding`, a stage-save response, and completion response omit credential, token, and configuration identifiers. It also proves a verified runtime status remains visible without exposing connection data.
+
+### Verification
+
+```powershell
+../../.venv/Scripts/python.exe -m unittest tests.test_app -v
+git diff --check
+```
+
+Result: application suite passed 26 tests; diff check passed.

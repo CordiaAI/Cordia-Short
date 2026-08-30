@@ -260,9 +260,21 @@ class ApplicationJourneyTests(unittest.TestCase):
 
     def test_onboarding_exposes_safe_catalog_and_normalized_selected_applications(self):
         self.register()
-        for stage, payload in self.onboarding_stages():
+        store = self.app.extensions["cordia_store"]
+        store.save_connection(
+            1,
+            "google_drive",
+            "verified",
+            {"access_token": "provider-access-token", "client_secret_env": "GOOGLE_CLIENT_SECRET"},
+        )
+        saved = self.client.put(
+            "/api/onboarding/assessment_part_1", json=self.onboarding_stages()[0][1]
+        )
+        for stage, payload in self.onboarding_stages()[1:]:
             self.assertEqual(200, self.client.put(f"/api/onboarding/{stage}", json=payload).status_code)
-        onboarding = self.client.get("/api/onboarding").json["onboarding"]
+        state = self.client.get("/api/onboarding")
+        onboarding = state.json["onboarding"]
+        completed = self.client.post("/api/onboarding/complete")
 
         self.assertEqual(
             [{"id": item["id"], "name": item["name"]} for item in CONNECTORS.values()],
@@ -273,9 +285,15 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("google_drive", selected["registry_id"])
         self.assertEqual("Store weekly notes.", selected["current_activities"])
         self.assertEqual("Collect the source notes.", selected["desired_activities"])
-        self.assertEqual("setup_required", selected["status"])
+        self.assertEqual("verified", selected["status"])
         self.assertEqual(onboarding["selected_applications"], onboarding["review"]["selected_applications"])
-        self.assertNotIn("client_secret_env", self.client.get("/api/onboarding").get_data(as_text=True))
+        self.assertNotIn("auth_kind", selected)
+        for response in (saved, state, completed):
+            body = response.get_data(as_text=True)
+            self.assertNotIn("client_secret_env", body)
+            self.assertNotIn("GOOGLE_CLIENT_SECRET", body)
+            self.assertNotIn("access_token", body)
+            self.assertNotIn("provider-access-token", body)
 
     def test_completed_onboarding_rejects_stage_edits(self):
         self.register()
