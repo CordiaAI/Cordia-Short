@@ -13,6 +13,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from cordia.connectors import CONNECTORS
 from cordia.onboarding import compile_documents, score_profile
 from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
@@ -279,7 +280,8 @@ class Store:
         if not clean:
             raise ValueError("survey answer required")
         self._save_survey_value(user_id, field, clean)
-        self._write_operator(user_id)
+        if not self._uses_onboarding_schema(user_id):
+            self._write_operator(user_id)
 
     def _save_survey_value(self, user_id: int, field: str, value: str) -> None:
         with self._connection() as connection:
@@ -301,6 +303,9 @@ class Store:
     def legacy_survey_complete(self, user_id: int) -> bool:
         answers = self.survey_answers(user_id)
         return all(answers.get(field) for field in SURVEY_FIELDS)
+
+    def _uses_onboarding_schema(self, user_id: int) -> bool:
+        return self.survey_answers(user_id).get("survey_schema_version") == str(SCHEMA_VERSION)
 
     def onboarding_stages(self, user_id: int) -> dict[str, dict]:
         placeholders = ", ".join("?" for _ in PERSISTED_STAGES)
@@ -334,7 +339,11 @@ class Store:
     def onboarding_state(self, user_id: int) -> dict:
         stages = self.onboarding_stages(user_id)
         completed_stages = [stage for stage in PERSISTED_STAGES if stage in stages]
-        if self.survey_answers(user_id).get("survey_schema_version") == str(SCHEMA_VERSION):
+        marker_is_valid = (
+            self._uses_onboarding_schema(user_id)
+            and len(stages) == len(PERSISTED_STAGES)
+        )
+        if marker_is_valid:
             current_stage = "workspace"
         else:
             missing = next((stage for stage in PERSISTED_STAGES if stage not in stages), None)
@@ -373,8 +382,10 @@ class Store:
         return document
 
     def survey_complete(self, user_id: int) -> bool:
-        answers = self.survey_answers(user_id)
-        return answers.get("survey_schema_version") == str(SCHEMA_VERSION)
+        return (
+            self._uses_onboarding_schema(user_id)
+            and len(self.onboarding_stages(user_id)) == len(PERSISTED_STAGES)
+        )
 
     @staticmethod
     def _connector_key(value: str) -> str:
@@ -428,19 +439,25 @@ class Store:
         if directory.exists():
             directory.rmdir()
 
-    def complete_onboarding(self, user_id: int, connector_catalog: dict) -> dict[str, str]:
+    def _compile_onboarding_documents(
+        self, user_id: int, connector_catalog: dict
+    ) -> dict[str, str]:
         stages = self.onboarding_stages(user_id)
         missing = next((stage for stage in PERSISTED_STAGES if stage not in stages), None)
         if missing:
             raise ValueError(f"complete {missing} first")
         for stage in PERSISTED_STAGES:
             validate_stage(stage, stages[stage]["answers"])
-        documents = compile_documents(
+        return compile_documents(
             stages,
             self._operator_adjustments(user_id),
             connector_catalog,
             self._selected_connection_statuses(user_id, stages, connector_catalog),
         )
+
+    def _install_onboarding_documents(
+        self, user_id: int, documents: dict[str, str], after_install=None
+    ) -> None:
         workspace = self.workspace_root / str(user_id)
         workspace.mkdir(parents=True, exist_ok=True)
         temporary_directory = workspace / f".onboarding-{secrets.token_hex(8)}"
@@ -454,22 +471,38 @@ class Store:
         try:
             for name, contents in documents.items():
                 (temporary_directory / name).write_text(contents, encoding="utf-8")
-            try:
-                for name in documents:
-                    (temporary_directory / name).replace(destinations[name])
-            except Exception:
-                for name, destination in destinations.items():
-                    backup = backups[name]
-                    if backup is None:
-                        if destination.exists():
-                            destination.unlink()
-                    else:
-                        destination.write_bytes(backup)
-                raise
+            for name in documents:
+                (temporary_directory / name).replace(destinations[name])
+            if after_install:
+                after_install()
+        except Exception:
+            for name, destination in destinations.items():
+                backup = backups[name]
+                if backup is None:
+                    if destination.exists():
+                        destination.unlink()
+                else:
+                    destination.write_bytes(backup)
+            raise
         finally:
             self._remove_temporary_directory(temporary_directory, temporary_files)
-        self._save_survey_value(user_id, "survey_schema_version", str(SCHEMA_VERSION))
+
+    def complete_onboarding(self, user_id: int, connector_catalog: dict) -> dict[str, str]:
+        documents = self._compile_onboarding_documents(user_id, connector_catalog)
+        self._install_onboarding_documents(
+            user_id,
+            documents,
+            lambda: self._save_survey_value(
+                user_id, "survey_schema_version", str(SCHEMA_VERSION)
+            ),
+        )
         return documents
+
+    def _recompile_completed_onboarding(self, user_id: int) -> None:
+        self._install_onboarding_documents(
+            user_id,
+            self._compile_onboarding_documents(user_id, CONNECTORS),
+        )
 
     def operator_profile(self, user_id: int) -> dict[str, int]:
         with self._connection() as connection:
@@ -601,7 +634,10 @@ class Store:
                 """,
                 (user_id, response_id, axis, target, previous, current, clean_label, now),
             )
-        self._write_operator(user_id)
+        if self._uses_onboarding_schema(user_id):
+            self._recompile_completed_onboarding(user_id)
+        else:
+            self._write_operator(user_id)
         return {
             "axis": axis,
             "target": target,

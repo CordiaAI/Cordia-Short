@@ -238,6 +238,69 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
         self.assertFalse(self.store.survey_complete(user_id))
 
+    def test_completion_marker_failure_restores_preexisting_files_and_incomplete_state(self):
+        user_id = complete_all_stages(self.store)
+        workspace = self.store.workspace_root / str(user_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        before = {
+            "operator.md": b"legacy operator\n",
+            "connectors.md": b"legacy connectors\n",
+            "fde.md": b"legacy fde\n",
+        }
+        for name, contents in before.items():
+            (workspace / name).write_bytes(contents)
+
+        with patch.object(self.store, "_save_survey_value", side_effect=OSError("database down")):
+            with self.assertRaisesRegex(OSError, "database down"):
+                self.store.complete_onboarding(user_id, CONNECTORS)
+
+        self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
+        self.assertNotIn("survey_schema_version", self.store.survey_answers(user_id))
+        self.assertFalse(self.store.survey_complete(user_id))
+
+    def test_completion_marker_requires_every_stage_to_remain_valid(self):
+        user_id = complete_all_stages(self.store)
+        self.store.complete_onboarding(user_id, CONNECTORS)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE survey_answers SET value = ? WHERE user_id = ? AND field = ?",
+                ("not-json", user_id, "assessment_part_2"),
+            )
+            connection.commit()
+
+        self.assertFalse(self.store.survey_complete(user_id))
+        self.assertEqual("assessment_part_2", self.store.onboarding_state(user_id)["current_stage"])
+
+    def test_completed_onboarding_keeps_compiled_profile_for_legacy_writes_and_adjustments(self):
+        user_id = complete_all_stages(self.store)
+        documents = self.store.complete_onboarding(user_id, CONNECTORS)
+        self.store.save_survey_answer(user_id, "name", "Legacy overwrite attempt")
+
+        self.assertEqual(documents["operator.md"], self.store.operator_markdown(user_id))
+        self.store.add_message(user_id, "user", "Make this more direct.")
+        response_id = self.store.add_message(
+            user_id, "assistant", "Here is the report plan.", kind="agent"
+        )
+        self.store.adjust_operator(user_id, response_id, "directness", 1, "Be more direct")
+
+        operator = self.store.operator_markdown(user_id)
+        self.assertIn("# Cordia operator profile", operator)
+        self.assertIn("## Human-facing profile summary", operator)
+        self.assertIn(f"Response {response_id}: Be more direct", operator)
+        self.assertNotIn("# Operator profile\n", operator)
+
+    def test_legacy_adjustment_keeps_legacy_operator_rendering(self):
+        user_id = self.store.register("legacy@example.com", "correct-horse-battery")
+        self.store.save_survey_answer(user_id, "name", "Jordan")
+        self.store.add_message(user_id, "user", "Make this more direct.")
+        response_id = self.store.add_message(
+            user_id, "assistant", "Here is the report plan.", kind="agent"
+        )
+
+        self.store.adjust_operator(user_id, response_id, "directness", 1, "Be more direct")
+
+        self.assertIn("# Operator profile", self.store.operator_markdown(user_id))
+
     def test_register_authenticate_and_session_ownership(self):
         user_id = self.store.register(" Person@Example.com ", "correct horse battery")
 

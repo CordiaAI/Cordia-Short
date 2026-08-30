@@ -312,9 +312,9 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual(200, retried.status_code)
         self.assertEqual("implementation", retried.json["adjustment"]["axis"])
         self.assertEqual(1, retried.json["adjustment"]["current"])
-        self.assertIn("Implementation preference: Implementation-first (1)", retried.json["operator"])
+        self.assertIn("Implementation preference: Answer/action-first (1)", retried.json["operator"])
         retry_operator, retry_messages = self.agent.calls[-1]
-        self.assertIn("Implementation preference: Implementation-first (1)", retry_operator)
+        self.assertIn("Implementation preference: Answer/action-first (1)", retry_operator)
         self.assertEqual("Give me the plan", retry_messages[-1]["content"])
 
     def test_adjusting_unknown_response_is_rejected_without_calling_agent(self):
