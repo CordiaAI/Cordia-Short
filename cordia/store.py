@@ -572,6 +572,19 @@ class Store:
     def memory_markdown(self, user_id: int) -> str:
         return self.operator_markdown(user_id)
 
+    def agent_context(self, user_id: int) -> str:
+        """Return compiled onboarding context only after its workspace is complete."""
+        if not self.survey_complete(user_id):
+            return self.operator_markdown(user_id)
+        workspace = self.workspace_root / str(user_id)
+        documents = []
+        for name in ("operator.md", "connectors.md", "fde.md"):
+            path = workspace / name
+            if not path.exists():
+                raise OSError("completed onboarding context is unavailable")
+            documents.append(path.read_text(encoding="utf-8"))
+        return "\n\n".join(documents)
+
     def adjust_operator(
         self,
         user_id: int,

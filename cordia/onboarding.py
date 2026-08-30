@@ -117,7 +117,7 @@ def _catalog_lookup(catalog: dict[str, dict]) -> dict[str, dict]:
     return lookup
 
 
-def _normalize_applications(applications: list[dict], catalog: dict[str, dict], statuses: dict[str, str]) -> list[dict]:
+def normalize_applications(applications: list[dict], catalog: dict[str, dict], statuses: dict[str, str]) -> list[dict]:
     lookup = _catalog_lookup(catalog)
     normalized = []
     for application in applications:
@@ -280,7 +280,7 @@ def compile_documents(
 ) -> dict[str, str]:
     """Compile onboarding context into three stable Markdown documents."""
     profile = score_profile(stages)
-    applications = _normalize_applications(
+    applications = normalize_applications(
         _answers(stages, "workspace_discovery")["applications"],
         connector_catalog,
         connection_statuses or {},

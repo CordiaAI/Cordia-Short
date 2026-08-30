@@ -8,20 +8,15 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from cordia.agent import Agent, AgentUnavailable, InvalidAgentAction
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
-from cordia.connectors import resolve_connector
+from cordia.connectors import CONNECTORS, resolve_connector
+from cordia.onboarding import normalize_applications
 from cordia.store import SURVEY_FIELDS, Store
+from cordia.survey import STAGE_ORDER, public_stage_schema
 from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
 
 ROOT = Path(__file__).resolve().parent
 SESSION_COOKIE = "cordia_session"
-SURVEY_QUESTIONS = {
-    "name": "What should I call you?",
-    "role": "What kind of work or role should this workspace support?",
-    "goal": "What is the first meaningful outcome you want Cordia to help with?",
-    "apps": "Which apps or services are already part of that work?",
-    "communication": "How should I explain things to you: big picture first, detail first, visual, or another way?",
-}
 ADJUSTMENT_LABELS = {
     ("context", -1): "Use only what I said",
     ("context", 1): "Use more context",
@@ -88,21 +83,40 @@ def create_app(
             raise PermissionError("sign in required")
         return user_id
 
-    def next_survey(user_id: int) -> dict | None:
-        answers = store.survey_answers(user_id)
-        for field in SURVEY_FIELDS:
-            if not answers.get(field):
-                return {"field": field, "question": SURVEY_QUESTIONS[field]}
-        return None
+    def onboarding_payload(user_id: int) -> dict:
+        onboarding = store.onboarding_state(user_id)
+        onboarding["stage_schemas"] = {
+            stage: public_stage_schema(stage, onboarding["answers"])
+            for stage in STAGE_ORDER
+        }
+        onboarding["application_catalog"] = [
+            {"id": connector["id"], "name": connector["name"]}
+            for connector in CONNECTORS.values()
+        ]
+        discovery = onboarding["answers"].get("workspace_discovery", {})
+        if discovery:
+            statuses = {
+                connector_id: status
+                for connector_id in CONNECTORS
+                if (status := store.connection_status(user_id, connector_id)) is not None
+            }
+            selected = normalize_applications(
+                discovery.get("applications", []), CONNECTORS, statuses
+            )
+            onboarding["selected_applications"] = selected
+            if onboarding.get("review"):
+                onboarding["review"]["selected_applications"] = selected
+        return onboarding
 
     def state_payload(user_id: int | None = None) -> dict:
         user_id = current_user() if user_id is None else user_id
         if not user_id:
             return {"state": "signed_out"}
-        survey = next_survey(user_id)
+        onboarding = onboarding_payload(user_id)
+        if not store.survey_complete(user_id):
+            return {"state": "onboarding", "onboarding": onboarding}
         return {
-            "state": "survey" if survey else "workspace",
-            "survey": survey,
+            "state": "workspace",
             "operator": store.operator_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": [
@@ -244,22 +258,46 @@ def create_app(
     @app.post("/api/survey")
     def survey():
         user_id = require_user()
-        current = next_survey(user_id)
-        if not current:
+        answers = store.survey_answers(user_id)
+        if store.onboarding_stages(user_id) or not any(answers.get(field) for field in SURVEY_FIELDS):
+            return jsonify({"error": "Continue in the new Surveyor"}), 410
+        if store.legacy_survey_complete(user_id):
             return jsonify({"ok": False, "error": "Surveyor is already complete"}), 409
+        current = next(field for field in SURVEY_FIELDS if not answers.get(field))
         answer = str((request.get_json(silent=True) or {}).get("answer", "")).strip()
         if not answer:
             return jsonify({"ok": False, "error": "answer is required"}), 400
         store.add_message(user_id, "user", answer, kind="survey")
-        store.save_survey_answer(user_id, current["field"], answer)
-        upcoming = next_survey(user_id)
-        assistant_message = (
-            upcoming["question"]
-            if upcoming
-            else "I saved that understanding. We can keep talking here and build your workspace together."
-        )
-        store.add_message(user_id, "assistant", assistant_message, kind="survey")
-        return jsonify({"ok": True, "assistant": assistant_message, **state_payload(user_id)})
+        store.save_survey_answer(user_id, current, answer)
+        return jsonify({"ok": True, **state_payload(user_id)})
+
+    @app.get("/api/onboarding")
+    def onboarding_state():
+        user_id = require_user()
+        return jsonify({"ok": True, "onboarding": onboarding_payload(user_id)})
+
+    @app.put("/api/onboarding/<stage>")
+    def onboarding_stage(stage):
+        user_id = require_user()
+        if store.survey_complete(user_id):
+            return jsonify({"ok": False, "error": "Surveyor is already complete"}), 409
+        try:
+            store.save_onboarding_stage(user_id, stage, request.get_json(silent=True) or {})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "onboarding": onboarding_payload(user_id)})
+
+    @app.post("/api/onboarding/complete")
+    def onboarding_complete():
+        user_id = require_user()
+        try:
+            store.complete_onboarding(user_id, CONNECTORS)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc), "onboarding": onboarding_payload(user_id)}), 409
+        except OSError:
+            app.logger.exception("onboarding workspace installation failed")
+            return jsonify({"ok": False, "error": "Cordia could not safely create your workspace. Your survey is saved."}), 500
+        return jsonify({"ok": True, **state_payload(user_id)})
 
     @app.post("/api/chat")
     def chat():
@@ -272,7 +310,7 @@ def create_app(
         store.add_message(user_id, "user", message)
         try:
             action = active_agent(user_id).respond(
-                store.operator_markdown(user_id), store.messages(user_id)
+                store.agent_context(user_id), store.messages(user_id)
             )
             setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
@@ -311,7 +349,7 @@ def create_app(
             retry_messages = store.messages_before_response(user_id, response_id)
             adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
             action = active_agent(user_id).respond(
-                store.operator_markdown(user_id), retry_messages
+                store.agent_context(user_id), retry_messages
             )
             setup_card, artifact = execute_workspace_action(user_id, action)
             store.add_message(user_id, "assistant", action["message"], kind="agent")
