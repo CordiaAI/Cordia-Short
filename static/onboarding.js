@@ -44,6 +44,7 @@ window.CordiaOnboarding = (() => {
           if (change(next) === false) return;
           selection = next;
           update();
+          updateContinue();
         });
         row.append(button);
         return { button, value };
@@ -69,7 +70,7 @@ window.CordiaOnboarding = (() => {
       input.maxLength = maxLength;
       if (singleLine) input.type = "text";
       else input.rows = 4;
-      input.addEventListener("input", () => { if (!busy) change(input.value); });
+      input.addEventListener("input", () => { if (!busy) { change(input.value); updateContinue(); } });
       group.append(caption, input);
       parent.append(group);
       return { group, input };
@@ -189,6 +190,7 @@ window.CordiaOnboarding = (() => {
         input.value = "";
         error.textContent = "";
         renderResults(); renderSelected();
+        updateContinue();
         selected.querySelectorAll("textarea")[draft.applications.length * 3 - 3]?.focus();
       }
 
@@ -216,7 +218,7 @@ window.CordiaOnboarding = (() => {
           const remove = node("button", "Remove", "quiet-button");
           remove.type = "button";
           remove.setAttribute("aria-label", `Remove ${application.name}`);
-          remove.addEventListener("click", () => { if (busy) return; draft.applications.splice(index, 1); renderSelected(); renderResults(); input.focus(); });
+          remove.addEventListener("click", () => { if (busy) return; draft.applications.splice(index, 1); renderSelected(); renderResults(); updateContinue(); input.focus(); });
           heading.append(node("h3", application.name), remove);
           card.append(heading);
           choices(card, `application-${index}-use`, "How does this application fit? Select one or both.", [{ id: "already_uses", label: "I already use it" }, { id: "wants_added", label: "I want it added" }], ["already_uses", "wants_added"].filter((key) => application[key]), (values) => {
@@ -306,6 +308,46 @@ window.CordiaOnboarding = (() => {
       return stages.slice(0, stages.indexOf(viewedStage)).reverse().find((stage) => onboarding.completed_stages.includes(stage) || (stage === "profile_snapshot" && onboarding.profile));
     }
 
+    function draftValid() {
+      const schema = onboarding.stage_schemas[viewedStage], draft = drafts[viewedStage];
+      if (schema.computed) return true;
+      const choice = (value, options) => options.some((option) => (typeof option === "object" ? option.id : option) === value);
+      const text = (value, required = true, maximum = 4000) => {
+        if (value === undefined && !required) return true;
+        return typeof value === "string" && (!required || Boolean(value.trim())) && value.trim().length <= maximum;
+      };
+      if (viewedStage === "assessment_part_1") return schema.questions.every((item) => choice(draft.answers?.[item.id], item.options));
+      if (viewedStage === "assessment_part_2") {
+        const domains = draft.domains || [];
+        return domains.length >= schema.domain_limit.minimum && domains.length <= schema.domain_limit.maximum && domains.every((id) => {
+          const domain = schema.domains[id];
+          return domain && choice(draft.ratings?.[id], onboarding.stage_schemas.assessment_part_1.rating_options)
+            && domain.terms.every((term) => ["familiar", "not_familiar"].includes(draft.familiarity?.[id]?.[term]));
+        });
+      }
+      if (viewedStage === "assessment_part_3") return schema.questions.every((item) => item.distinct_selection
+        ? choice(draft.most, item.options) && choice(draft.least, item.options) && draft.most !== draft.least
+        : choice(draft[item.id], item.options));
+      const coreValid = schema.fields.every((field) => {
+        if (field.id === "applications") {
+          const applications = draft.applications || [];
+          const controlOptions = schema.fields.find((item) => item.id === "control_level").options;
+          return applications.length > 0 && applications.length <= 20 && applications.every((app) =>
+            text(app.name, true, 400) && (app.already_uses || app.wants_added)
+            && ["current_activities", "desired_activities", "inputs_outputs"].every((key) => text(app[key]))
+            && choice(app.control_level, controlOptions));
+        }
+        return field.options ? choice(draft[field.id], field.options) : text(draft[field.id], field.required, field.max_length || 4000);
+      });
+      return coreValid && Object.entries(schema.conditional_fields || {}).every(([id, metadata]) => metadata.options
+        ? (draft[id] || []).every((value) => choice(value, metadata.options))
+        : !activeCondition(metadata, draft) || text(draft[id], false));
+    }
+
+    function updateContinue() {
+      get("continue").disabled = busy || !draftValid();
+    }
+
     function renderCurrentStage() {
       const schema = onboarding.stage_schemas[viewedStage];
       fields.replaceChildren(); error.textContent = "";
@@ -317,6 +359,7 @@ window.CordiaOnboarding = (() => {
       const draft = drafts[viewedStage] ||= copy(onboarding.answers[viewedStage] || {});
       const renderers = { assessment_part_1: partOne, assessment_part_2: partTwo, assessment_part_3: partThree, assessment_part_4: partFour, profile_snapshot: snapshot, workspace_discovery: discovery, workspace_review: review };
       renderers[viewedStage](schema, draft);
+      updateContinue();
       root.scrollTo({ top: 0 });
       get("title").focus();
     }
@@ -329,13 +372,13 @@ window.CordiaOnboarding = (() => {
         if (value) { control.wasDisabled = control.disabled; control.disabled = true; }
         else { control.disabled = Boolean(control.wasDisabled); }
       });
-      get("continue").disabled = value;
+      updateContinue();
       get("back").disabled = value || !previousStage();
     }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (busy) return;
+      if (busy || !draftValid()) return;
       error.textContent = "";
       if (viewedStage === "profile_snapshot") { viewedStage = "workspace_discovery"; renderCurrentStage(); return; }
       setBusy(true);

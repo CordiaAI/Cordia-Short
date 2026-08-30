@@ -85,6 +85,90 @@ test('all twenty ratings serialize as integer answers and advance with focused h
   assert.equal(ui.document.activeElement, ui.get('onboarding-title'));
 });
 
+test('Continue gates all twenty ratings and programmatic incomplete submits do not save', async () => {
+  const ui = setup();
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await submit(ui);
+  assert.equal(ui.calls.length, 0);
+  for (let number = 1; number < 20; number++) await choose(ui, `p1_${String(number).padStart(2, '0')}`, 3);
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'p1_20', 3);
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+});
+
+test('Continue requires domain ratings and every term; work needs only a self-rating', async () => {
+  const ui = setup('assessment_part_2');
+  ui.state.answers.assessment_part_2 = {};
+  ui.controller.show(ui.state);
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'domains', 'work_professional');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'rating:work_professional', 3);
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await choose(ui, 'domains', 'technology_software');
+  await choose(ui, 'rating:technology_software', 4);
+  for (const term of fixture.stage_schemas.assessment_part_2.domains.technology_software.terms.slice(0, -1)) await choose(ui, `technology_software:${term}`, 'familiar');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'technology_software:API', 'not_familiar');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await choose(ui, 'domains', 'work_professional');
+  await choose(ui, 'domains', 'technology_software');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+});
+
+test('Continue requires every communication choice and distinct MOST/LEAST', async () => {
+  const ui = setup('assessment_part_3');
+  ui.state.answers.assessment_part_3 = {};
+  ui.controller.show(ui.state);
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  for (const [field, answer] of Object.entries(fixture.answers.assessment_part_3)) if (field !== 'least') await choose(ui, field, answer);
+  await choose(ui, 'least', 'logical');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'least', 'practical');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+});
+
+test('Continue rejects blank or overlength requests and honors optional third request', async () => {
+  const ui = setup('assessment_part_4');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await input(ui, 'request_2', '   ');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await submit(ui);
+  assert.equal(ui.calls.length, 0);
+  await input(ui, 'request_2', 'Review my notes.');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await input(ui, 'request_3', 'x'.repeat(2001));
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await input(ui, 'request_3', '');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+});
+
+test('Continue checks discovery core, application details, removal and active optional text', async () => {
+  const ui = setup('workspace_discovery');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await input(ui, 'outcome', ' ');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await input(ui, 'outcome', 'Review source notes');
+  await input(ui, 'application-0-desired_activities', '');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await input(ui, 'application-0-desired_activities', 'Prepare report');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await choose(ui, 'sensitive_data', 'financial');
+  await input(ui, 'sensitive_data_details', 'x'.repeat(4001));
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await choose(ui, 'sensitive_data', 'financial');
+  assert.equal(ui.get('onboarding-continue').disabled, false, 'hidden stale details are omitted');
+  await ui.root.querySelector('[aria-label="Remove Google Drive"]').fire('click');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+  await ui.root.querySelector('[aria-label="Remove Team Notes"]').fire('click');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  await input(ui, 'application_search', 'My notes');
+  await ui.root.querySelector('[data-add-manual]').fire('click');
+  assert.equal(ui.get('onboarding-continue').disabled, true);
+  for (const field of ['current_activities', 'desired_activities', 'inputs_outputs']) await input(ui, `application-0-${field}`, 'Notes');
+  assert.equal(ui.get('onboarding-continue').disabled, false);
+});
+
 test('server errors preserve text and busy state prevents duplicate submission and Back', async () => {
   let reject;
   const ui = setup('assessment_part_4', () => new Promise((resolve, fail) => { reject = fail; }));
@@ -109,6 +193,8 @@ test('domains enforce maximum two, allow deselection, omit inactive ratings and 
   await choose(ui, 'domains', 'technology_software');
   await choose(ui, 'domains', 'work_professional');
   await choose(ui, 'rating:work_professional', 5);
+  await choose(ui, 'rating:money_finance', 3);
+  for (const term of fixture.stage_schemas.assessment_part_2.domains.money_finance.terms) await choose(ui, `money_finance:${term}`, 'not_familiar');
   await submit(ui);
   assert.deepEqual(ui.calls[0].body.domains, ['money_finance', 'work_professional']);
   assert.equal(ui.calls[0].body.ratings.technology_software, undefined);
@@ -188,6 +274,7 @@ test('application search/manual add uses catalog, captures use and control, has 
   await buttons(results).find(node => node.textContent.includes('OpenAI API')).fire('click');
   await input(ui, 'application_search', '<script>My planning app</script>');
   await ui.root.querySelector('[data-add-manual]').fire('click');
+  for (const index of [2, 3]) for (const field of ['current_activities', 'desired_activities', 'inputs_outputs']) await input(ui, `application-${index}-${field}`, 'Project notes');
   await submit(ui);
   const known = ui.calls[0].body.applications.find(app => app.application_id === 'openai_api');
   const manual = ui.calls[0].body.applications.at(-1);

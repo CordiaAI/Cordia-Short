@@ -333,6 +333,71 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertIn(f"Response {response_id}: Be more direct", operator)
         self.assertNotIn("# Operator profile\n", operator)
 
+    def test_agent_context_supersedes_connection_snapshots_without_rewriting_user_content(self):
+        user_id = complete_all_stages(self.store)
+        self.store.complete_onboarding(user_id, CONNECTORS)
+        response_id = self.store.add_message(user_id, "assistant", "A plan.", kind="agent")
+        self.store.adjust_operator(user_id, response_id, "context", 1, "Infer context")
+        workspace = self.store.workspace_root / str(user_id)
+        for name in ("operator.md", "connectors.md", "fde.md"):
+            path = workspace / name
+            path.write_text(path.read_text(encoding="utf-8") + "\nUser-authored workflow clarification.\n", encoding="utf-8")
+        before = {name: (workspace / name).read_bytes() for name in ("operator.md", "connectors.md", "fde.md")}
+
+        # Real Store transitions using disposable test data, not provider verification.
+        for status in ("verified", "needs_attention", "verified"):
+            with self.subTest(status=status):
+                self.store.save_connection(user_id, "google_drive", status, {})
+                context = self.store.agent_context(user_id)
+                self.assertIn("## Current runtime connection status", context)
+                current = context.split("## Current runtime connection status", 1)[1]
+                self.assertIn("supersede", current)
+                self.assertIn("connectors.md", current)
+                self.assertIn("fde.md", current)
+                self.assertIn(f"Google Drive (google_drive): {status}", current)
+                self.assertIn(f"Response {response_id}: Infer context", context)
+                self.assertEqual(3, context.count("User-authored workflow clarification."))
+                self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
+
+    def test_agent_context_downgrades_a_verified_completion_snapshot(self):
+        user_id = complete_all_stages(self.store)
+        self.store.save_connection(user_id, "google_drive", "verified", {})
+        self.store.complete_onboarding(user_id, CONNECTORS)
+        self.store.save_connection(user_id, "google_drive", "needs_attention", {})
+
+        context = self.store.agent_context(user_id)
+
+        self.assertIn("## Current runtime connection status", context)
+        current = context.split("## Current runtime connection status", 1)[1]
+        self.assertIn("Google Drive (google_drive): needs_attention", current)
+        self.assertNotIn(": verified", current)
+
+    def test_agent_context_current_status_is_user_scoped_and_defaults_to_setup_required(self):
+        user_id = complete_all_stages(self.store)
+        other_user = self.store.register("other@example.com", "correct-horse-battery")
+        self.store.save_connection(other_user, "google_drive", "verified", {})
+        self.store.complete_onboarding(user_id, CONNECTORS)
+
+        context = self.store.agent_context(user_id)
+
+        self.assertIn("## Current runtime connection status", context)
+        current = context.split("## Current runtime connection status", 1)[1]
+        self.assertIn("Google Drive (google_drive): setup_required", current)
+        self.assertNotIn(": verified", current)
+        self.assertIn("historical snapshots", context)
+
+    def test_explicit_feedback_recompiles_guidance_for_effective_axis(self):
+        user_id = complete_all_stages(self.store)
+        self.store.complete_onboarding(user_id, CONNECTORS)
+        response_id = self.store.add_message(user_id, "assistant", "A plan.", kind="agent")
+        self.assertIn("Explain the reasoning before", self.store.operator_markdown(user_id))
+        for expected in ("Pair the answer with a brief rationale", "Give the answer or proposed next step first"):
+            self.store.adjust_operator(user_id, response_id, "implementation", 1, "Answer first")
+            operator = self.store.operator_markdown(user_id)
+            self.assertIn(expected, operator)
+            self.assertNotIn("Explain the reasoning before", operator)
+            self.assertIn("assessment_part_3.answer_order=reasoning_first", operator)
+
     def test_legacy_adjustment_keeps_legacy_operator_rendering(self):
         user_id = self.store.register("legacy@example.com", "correct-horse-battery")
         self.store.save_survey_answer(user_id, "name", "Jordan")

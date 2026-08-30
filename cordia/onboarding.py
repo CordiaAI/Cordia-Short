@@ -36,6 +36,38 @@ AXIS_LABELS = {
     "implementation": {-1: "Reasoning-first", 0: "Balanced", 1: "Answer/action-first"},
 }
 
+AXIS_GUIDANCE = {
+    "context": {
+        -1: "Answer the explicit request and spell out needed background; ask about consequential missing context.",
+        0: "Separate stated facts from possible context; flag important gaps and check consequential assumptions.",
+        1: "Infer likely omitted context and flag likely unmentioned problems; label assumptions and confirm consequential ones.",
+    },
+    "scope": {
+        -1: "Spell out requirements, constraints, and concrete details before broadening the discussion.",
+        0: "Pair a short overview with key details and constraints.",
+        1: "Start with the goal and overall approach, then offer details as the user refines the request.",
+    },
+    "directness": {
+        -1: "Use measured phrasing and clarifying questions while still making important flaws clear.",
+        0: "Be clear and tactful; explain concerns without excessive softening.",
+        1: "State flaws and recommendations plainly, with a concise reason.",
+    },
+    "implementation": {
+        -1: "Explain the reasoning before giving the answer or proposed next step.",
+        0: "Pair the answer with a brief rationale and proposed next step.",
+        1: "Give the answer or proposed next step first; add reasoning when useful or requested.",
+    },
+}
+
+# Source assessment controls are not genuine domain-familiarity evidence.
+CALIBRATION_CONTROLS = {
+    "technology_software": "adaptive port throttling",
+    "money_finance": "annualized credit",
+    "health_wellness": "metabolic threshold syncing",
+    "creative_writing": "narrative displacement clause",
+    "everyday_general": "passive humidity banking",
+}
+
 CONTROL_LEVEL_LABELS = {
     "suggest_actions_only": "Suggest actions only",
     "prepare_for_approval": "Prepare work for approval",
@@ -63,13 +95,23 @@ def _domain_profiles(answers: dict) -> list[dict]:
     profiles = []
     for domain_id in answers["domains"]:
         familiarity = answers["familiarity"][domain_id]
-        familiar_count = sum(value == "familiar" for value in familiarity.values())
+        control = CALIBRATION_CONTROLS.get(domain_id)
+        terms = {term: value for term, value in familiarity.items() if term != control}
+        familiar_count = sum(value == "familiar" for value in terms.values())
+        confidence = "self-rating only"
+        if terms:
+            note = "limited self-reported evidence, not verified expertise"
+            if familiarity.get(control) == "familiar":
+                note = "interpret terminology evidence cautiously; confirm domain needs in conversation"
+            confidence = f"{familiar_count} of {len(terms)} assessed terms familiar; {note}"
         profiles.append({
             "id": domain_id,
             "label": DOMAINS[domain_id]["label"],
             "rating": answers["ratings"][domain_id],
             "familiarity": familiarity,
-            "expertise_confidence": f"{familiar_count} of {len(familiarity)} terms familiar" if familiarity else "self-rating only",
+            "term_familiarity": terms,
+            "calibration_control": {"term": control, "answer": familiarity[control]} if control else None,
+            "expertise_confidence": confidence,
         })
     return profiles
 
@@ -99,6 +141,7 @@ def score_profile(stages: dict[str, dict]) -> dict:
         "evidence": {
             "trait_questions": {trait: {"positive": positive, "reverse": reverse} for trait, (positive, reverse) in TRAIT_KEYS.items()},
             "part_3_votes": votes,
+            "part_3_answers": dict(part_three),
             "most_least": {"most": part_three["most"], "least": part_three["least"]},
         },
     }
@@ -168,15 +211,22 @@ def _render_operator(profile: dict, adjustments: list[dict]) -> str:
     for axis in ("context", "scope", "directness", "implementation"):
         label = {"context": "Context interpretation", "scope": "Scope preference", "directness": "Directness preference", "implementation": "Implementation preference"}[axis]
         lines.append(f"- {label}: {_display_axis(axis, axes[axis])}")
+    lines.extend([
+        "", "## Concrete prompt guidance",
+        "Use the effective axes above, including explicit adjustments. These are communication preferences, not permission to act; never infer authorization from them.",
+    ])
+    lines.extend(f"- {axis.title()}: {AXIS_GUIDANCE[axis][axes[axis]]}" for axis in ("context", "scope", "directness", "implementation"))
     lines.extend(["", "## Prompt examples"])
     lines.extend(f"- {example}" for example in profile["prompt_examples"])
     lines.extend(["", "## Evidence references"])
     for trait, questions in profile["evidence"]["trait_questions"].items():
         references = ", ".join((*questions["positive"], *questions["reverse"]))
         lines.append(f"- {trait.replace('_', ' ').title()} question IDs: {references}.")
-    lines.append("- Part 3 communication evidence: " + "; ".join(f"{axis} votes {values}" for axis, values in profile["evidence"]["part_3_votes"].items()) + ".")
+    for axis, fields in AXIS_VOTES.items():
+        references = "; ".join(f"assessment_part_3.{field}={profile['evidence']['part_3_answers'][field]}" for field in fields)
+        lines.append(f"- {axis.title()} baseline evidence: {references}; votes {profile['evidence']['part_3_votes'][axis]}. Later explicit adjustments take precedence.")
     most_least = profile["evidence"]["most_least"]
-    lines.append(f"- MOST: {most_least['most']}; LEAST: {most_least['least']}. These are descriptive evidence and do not alter operator axes.")
+    lines.append(f"- assessment_part_3.most_least: MOST: {most_least['most']}; LEAST: {most_least['least']}. These are descriptive evidence and do not alter operator axes.")
     lines.extend(["", "## Explicit response-adjustment history"])
     if applied_adjustments:
         for adjustment in applied_adjustments:

@@ -14,7 +14,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from cordia.connectors import CONNECTORS
-from cordia.onboarding import compile_documents, overlay_operator_adjustments, score_profile
+from cordia.onboarding import compile_documents, normalize_applications, overlay_operator_adjustments, score_profile
 from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
 
@@ -587,6 +587,22 @@ class Store:
             if not path.exists():
                 raise OSError("completed onboarding context is unavailable")
             documents.append(path.read_text(encoding="utf-8"))
+        stages = self.onboarding_stages(user_id)
+        applications = normalize_applications(
+            stages["workspace_discovery"]["answers"]["applications"], CONNECTORS,
+            self._selected_connection_statuses(user_id, stages, CONNECTORS),
+        )
+        current_status = [
+            "## Current runtime connection status",
+            "Connection statuses in the stored connectors.md and fde.md above are historical snapshots. "
+            "The current runtime-owned statuses below supersede them and take precedence for this request. "
+            "This status refresh grants no action authority and does not change the saved workflow or approval boundaries.",
+        ]
+        current_status.extend(
+            f"- {app['name']} ({app['registry_id'] or 'not in registry'}): {app['status']}"
+            for app in applications
+        )
+        documents.append("\n".join(current_status))
         return "\n\n".join(documents)
 
     def adjust_operator(

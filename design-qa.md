@@ -1,5 +1,19 @@
 # Cordia Short Design QA
 
+## Final-review source fix evidence — 2026-08-30
+
+This source/test-only fix wave starts from `3b12950`. It does not replace the earlier browser checkpoint or establish a new visual, native-keyboard, or provider acceptance pass.
+
+- Agent context now appends current, per-user runtime connection status and explicitly supersedes historical status snapshots in `connectors.md` and `fde.md`. Real temporary-Store tests cover upgrade, downgrade, absent connection rows, user isolation, and byte-preservation of all three saved files, including user-authored planning text and explicit operator history. These test status transitions are not live provider-verification claims.
+- All five terminology domains separate the calibration-control response from four genuine-term familiarity answers. The neutral confidence note stays conservative, preserves self-rating and operator axes, and retains Work / professional as self-rating-only. Source question wording is unchanged.
+- The four effective ternary axes compile concrete prompt guidance with stable Part 3 question/answer references. Explicit response feedback updates the guidance; free-text samples do not classify or change it. Communication preferences never grant action authority.
+- Continue is disabled for incomplete or invalid persisted-stage drafts. Manifest-driven checks cover ratings, domain familiarity, distinct MOST/LEAST, required/optional text bounds, application details, and active conditional text. Existing native buttons, labels, required inputs, server validation, and input retention after server errors remain intact. Twenty controller tests pass using the existing DOM boundary double; this is not native-browser keyboard evidence.
+- Only the tracked `task-4-report.md` scratch report was removed from the index; its ignored local copy remains.
+
+Fresh source verification: `../../.venv/Scripts/python.exe -m unittest discover -s tests -v` passed **153 tests in 49.916 seconds** (exit 0). `node --test tests/onboarding.test.cjs` passed **20 tests** (exit 0). `node --check static/onboarding.js`, Python compilation of the two changed modules, and `git diff --check` passed. The existing deliberate disk-full regression logs its expected traceback; Git emits LF/CRLF warnings, so the full output is not described as pristine.
+
+Outstanding responsive/source visual comparison, full narrow-screen journey, native survey Enter/Space activation, real-provider chat/setup/artifact/Live View checks, and final controller review remain OPEN. No push, merge, or deployment was performed in this fix wave.
+
 ## Current Surveyor onboarding evidence — 2026-08-30
 
 This section supersedes the historical LiveView result below for this branch. It records local evidence only: no merge or live deployment is claimed.
