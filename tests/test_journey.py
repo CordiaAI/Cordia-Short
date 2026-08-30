@@ -258,6 +258,44 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertNotIn("survey_schema_version", self.store.survey_answers(user_id))
         self.assertFalse(self.store.survey_complete(user_id))
 
+    def test_staging_failure_never_rewrites_existing_destinations(self):
+        user_id = complete_all_stages(self.store)
+        workspace = self.store.workspace_root / str(user_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        before = {
+            "operator.md": b"legacy operator\n",
+            "connectors.md": b"legacy connectors\n",
+            "fde.md": b"legacy fde\n",
+        }
+        for name, contents in before.items():
+            (workspace / name).write_bytes(contents)
+        original_write_text = Path.write_text
+        original_write_bytes = Path.write_bytes
+        temporary_writes = 0
+        destination_writes = []
+
+        def fail_third_temporary_write(path, contents, *args, **kwargs):
+            nonlocal temporary_writes
+            if path.parent.name.startswith(".onboarding-"):
+                temporary_writes += 1
+                if temporary_writes == 3:
+                    raise OSError("disk full")
+            return original_write_text(path, contents, *args, **kwargs)
+
+        def reject_destination_rewrite(path, contents, *args, **kwargs):
+            if path.parent == workspace:
+                destination_writes.append(path)
+                raise AssertionError("staging failure rewrote a destination")
+            return original_write_bytes(path, contents, *args, **kwargs)
+
+        with patch.object(Path, "write_text", new=fail_third_temporary_write):
+            with patch.object(Path, "write_bytes", new=reject_destination_rewrite):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    self.store.complete_onboarding(user_id, CONNECTORS)
+
+        self.assertEqual([], destination_writes)
+        self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
+
     def test_completion_marker_requires_every_stage_to_remain_valid(self):
         user_id = complete_all_stages(self.store)
         self.store.complete_onboarding(user_id, CONNECTORS)

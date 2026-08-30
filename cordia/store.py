@@ -471,19 +471,20 @@ class Store:
         try:
             for name, contents in documents.items():
                 (temporary_directory / name).write_text(contents, encoding="utf-8")
-            for name in documents:
-                (temporary_directory / name).replace(destinations[name])
-            if after_install:
-                after_install()
-        except Exception:
-            for name, destination in destinations.items():
-                backup = backups[name]
-                if backup is None:
-                    if destination.exists():
-                        destination.unlink()
-                else:
-                    destination.write_bytes(backup)
-            raise
+            try:
+                for name in documents:
+                    (temporary_directory / name).replace(destinations[name])
+                if after_install:
+                    after_install()
+            except Exception:
+                for name, destination in destinations.items():
+                    backup = backups[name]
+                    if backup is None:
+                        if destination.exists():
+                            destination.unlink()
+                    else:
+                        destination.write_bytes(backup)
+                raise
         finally:
             self._remove_temporary_directory(temporary_directory, temporary_files)
 
