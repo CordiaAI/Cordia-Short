@@ -4,11 +4,96 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from app import create_app
+from cordia.connectors import CONNECTORS
 from cordia.connector_runtime import ConnectorRuntime
 from cordia.store import Store
+
+
+def valid_part_one_payload():
+    return {"answers": {f"p1_{number:02d}": 3 for number in range(1, 21)}}
+
+
+def valid_part_two_payload():
+    return {
+        "domains": ["technology_software"],
+        "ratings": {"technology_software": 4},
+        "familiarity": {
+            "technology_software": {
+                "cloud storage": "familiar",
+                "two-factor authentication": "familiar",
+                "adaptive port throttling": "not_familiar",
+                "browser cache": "familiar",
+                "API": "familiar",
+            }
+        },
+    }
+
+
+def valid_part_three_payload():
+    return {
+        "briefing_style": "requirements_upfront",
+        "reply_preference": "literal_narrow",
+        "most": "logical",
+        "least": "imaginative",
+        "flawed_plan": "state_plainly",
+        "answer_order": "reasoning_first",
+        "background_assumption": "spell_out_background",
+        "edit_boundary": "only_requested_edits",
+        "bad_idea": "say_so_directly",
+    }
+
+
+def valid_part_four_payload():
+    return {
+        "request_1": "Help me plan today.",
+        "request_2": "Review this project outline.",
+        "request_3": "",
+    }
+
+
+def valid_discovery_payload():
+    return {
+        "outcome": "Publish a weekly project status report.",
+        "success_criteria": "The report is ready every Friday.",
+        "current_workflow": "I collect notes and write the report manually.",
+        "applications": [
+            {
+                "application_id": "google_drive",
+                "name": "Google Drive",
+                "already_uses": True,
+                "wants_added": True,
+                "current_activities": "Store weekly notes.",
+                "desired_activities": "Collect the source notes.",
+                "inputs_outputs": "Notes in, report draft out.",
+                "control_level": "prepare_for_approval",
+            }
+        ],
+        "inputs": "Weekly notes.",
+        "outputs": "A status report.",
+        "control_level": "prepare_for_approval",
+        "first_workspace": "A report drafting workspace.",
+    }
+
+
+def save_all_stages(store, user_id):
+    for stage, payload in (
+        ("assessment_part_1", valid_part_one_payload()),
+        ("assessment_part_2", valid_part_two_payload()),
+        ("assessment_part_3", valid_part_three_payload()),
+        ("assessment_part_4", valid_part_four_payload()),
+        ("workspace_discovery", valid_discovery_payload()),
+    ):
+        store.save_onboarding_stage(user_id, stage, payload)
+
+
+def complete_all_stages(store):
+    user_id = store.register("complete@example.com", "correct-horse-battery")
+    save_all_stages(store, user_id)
+    return user_id
 
 
 class StoreJourneyTests(unittest.TestCase):
@@ -20,6 +105,138 @@ class StoreJourneyTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_onboarding_stage_round_trips_as_validated_json(self):
+        user_id = self.store.register("person@example.com", "correct-horse-battery")
+
+        saved = self.store.save_onboarding_stage(
+            user_id, "assessment_part_1", valid_part_one_payload()
+        )
+
+        self.assertEqual(2, saved["schema_version"])
+        self.assertEqual(saved, self.store.onboarding_stages(user_id)["assessment_part_1"])
+
+    def test_onboarding_resumes_first_incomplete_stage(self):
+        user_id = self.store.register("person@example.com", "correct-horse-battery")
+        self.store.save_onboarding_stage(user_id, "assessment_part_1", valid_part_one_payload())
+
+        state = self.store.onboarding_state(user_id)
+
+        self.assertEqual("assessment_part_2", state["current_stage"])
+        self.assertEqual(["assessment_part_1"], state["completed_stages"])
+
+    def test_onboarding_treats_malformed_saved_stage_as_incomplete(self):
+        user_id = self.store.register("person@example.com", "correct-horse-battery")
+        self.store.save_onboarding_stage(user_id, "assessment_part_1", valid_part_one_payload())
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO survey_answers(user_id, field, value) VALUES (?, ?, ?)",
+                (user_id, "assessment_part_2", "not-json"),
+            )
+            connection.commit()
+
+        state = self.store.onboarding_state(user_id)
+
+        self.assertEqual("assessment_part_2", state["current_stage"])
+        self.assertNotIn("assessment_part_2", state["answers"])
+
+    def test_onboarding_rejects_later_stage_and_computed_stage_writes(self):
+        user_id = self.store.register("person@example.com", "correct-horse-battery")
+
+        with self.assertRaisesRegex(ValueError, "complete assessment_part_1 first"):
+            self.store.save_onboarding_stage(
+                user_id, "assessment_part_2", valid_part_two_payload()
+            )
+        with self.assertRaisesRegex(ValueError, "unknown onboarding stage"):
+            self.store.save_onboarding_stage(user_id, "profile_snapshot", {})
+
+        self.assertNotIn("profile_snapshot", self.store.survey_answers(user_id))
+
+    def test_completion_atomically_installs_three_files_and_preserves_runtime_state(self):
+        user_id = complete_all_stages(self.store)
+        self.store.add_message(user_id, "user", "Make this more direct.")
+        response_id = self.store.add_message(
+            user_id, "assistant", "Here is the report plan.", kind="agent"
+        )
+        self.store.adjust_operator(user_id, response_id, "directness", 1, "Be more direct")
+        artifact_id = self.store.save_artifact(
+            user_id,
+            {
+                "type": "table",
+                "title": "Existing work",
+                "columns": ["name"],
+                "rows": [["Plan.md"]],
+                "source": "google_drive",
+            },
+        )
+        self.store.save_connection(
+            user_id, "google_drive", "verified", {"access_token": "encrypted"}
+        )
+
+        documents = self.store.complete_onboarding(user_id, CONNECTORS)
+
+        workspace = self.store.workspace_root / str(user_id)
+        self.assertEqual(documents["operator.md"], (workspace / "operator.md").read_text(encoding="utf-8"))
+        self.assertTrue((workspace / "connectors.md").exists())
+        self.assertTrue((workspace / "fde.md").exists())
+        self.assertEqual("verified", self.store.connection_status(user_id, "google_drive"))
+        self.assertEqual(artifact_id, self.store.artifacts(user_id)[0]["id"])
+        self.assertTrue(self.store.survey_complete(user_id))
+
+    def test_completion_write_failure_preserves_existing_files_and_incomplete_state(self):
+        user_id = complete_all_stages(self.store)
+        workspace = self.store.workspace_root / str(user_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        before = {
+            "operator.md": b"legacy operator\n",
+            "connectors.md": b"legacy connectors\n",
+            "fde.md": b"legacy fde\n",
+        }
+        for name, contents in before.items():
+            (workspace / name).write_bytes(contents)
+        original_write_text = Path.write_text
+        temporary_writes = 0
+
+        def fail_third_temporary_write(path, contents, *args, **kwargs):
+            nonlocal temporary_writes
+            if path.parent.name.startswith(".onboarding-"):
+                temporary_writes += 1
+                if temporary_writes == 3:
+                    raise OSError("disk full")
+            return original_write_text(path, contents, *args, **kwargs)
+
+        with patch.object(Path, "write_text", new=fail_third_temporary_write):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.store.complete_onboarding(user_id, CONNECTORS)
+
+        self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
+        self.assertFalse(self.store.survey_complete(user_id))
+        self.assertEqual("workspace_review", self.store.onboarding_state(user_id)["current_stage"])
+
+    def test_completion_replacement_failure_restores_preexisting_files(self):
+        user_id = complete_all_stages(self.store)
+        workspace = self.store.workspace_root / str(user_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        before = {
+            "operator.md": b"legacy operator\n",
+            "connectors.md": b"legacy connectors\n",
+            "fde.md": b"legacy fde\n",
+        }
+        for name, contents in before.items():
+            (workspace / name).write_bytes(contents)
+        original_replace = Path.replace
+
+        def fail_connector_replacement(path, target):
+            if path.parent.name.startswith(".onboarding-") and path.name == "connectors.md":
+                raise OSError("replace failed")
+            return original_replace(path, target)
+
+        with patch.object(Path, "replace", new=fail_connector_replacement):
+            with self.assertRaisesRegex(OSError, "replace failed"):
+                self.store.complete_onboarding(user_id, CONNECTORS)
+
+        self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
+        self.assertFalse(self.store.survey_complete(user_id))
 
     def test_register_authenticate_and_session_ownership(self):
         user_id = self.store.register(" Person@Example.com ", "correct horse battery")
@@ -74,7 +291,8 @@ class StoreJourneyTests(unittest.TestCase):
         operator_path = Path(self.temp.name) / "workspaces" / str(user_id) / "operator.md"
         self.assertEqual(operator, operator_path.read_text(encoding="utf-8"))
         self.assertFalse((operator_path.parent / "memory.md").exists())
-        self.assertTrue(self.store.survey_complete(user_id))
+        self.assertTrue(self.store.legacy_survey_complete(user_id))
+        self.assertFalse(self.store.survey_complete(user_id))
 
     def test_response_correction_moves_one_ternary_coordinate_and_records_evidence(self):
         user_id = self.store.register("person@example.com", "correct horse battery")
@@ -320,14 +538,10 @@ class RealMCPConnectorJourneyTests(unittest.TestCase):
             json={"email": "person@example.com", "password": "correct horse battery"},
         )
         self.assertEqual(201, register.status_code)
-        for answer in [
-            "Jordan",
-            "Operations lead",
-            "Find documents",
-            "Google Drive",
-            "Big picture first",
-        ]:
-            self.assertEqual(200, self.client.post("/api/survey", json={"answer": answer}).status_code)
+        store = self.app.extensions["cordia_store"]
+        user_id = store.authenticate("person@example.com", "correct horse battery")
+        save_all_stages(store, user_id)
+        store.complete_onboarding(user_id, CONNECTORS)
 
         setup = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
         state = parse_qs(urlparse(setup.json["setup_card"]["action_url"]).query)["state"][0]

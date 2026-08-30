@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from app import create_app
+from cordia.connectors import CONNECTORS
 from cordia.workspace_mcp import WorkspaceMCPError
 
 
@@ -194,6 +195,76 @@ class ApplicationJourneyTests(unittest.TestCase):
         ]:
             response = self.client.post("/api/survey", json={"answer": answer})
             self.assertEqual(200, response.status_code)
+        store = self.app.extensions["cordia_store"]
+        user_id = store.authenticate("person@example.com", "correct horse battery")
+        stages = (
+            ("assessment_part_1", {"answers": {f"p1_{number:02d}": 3 for number in range(1, 21)}}),
+            (
+                "assessment_part_2",
+                {
+                    "domains": ["technology_software"],
+                    "ratings": {"technology_software": 4},
+                    "familiarity": {
+                        "technology_software": {
+                            "cloud storage": "familiar",
+                            "two-factor authentication": "familiar",
+                            "adaptive port throttling": "not_familiar",
+                            "browser cache": "familiar",
+                            "API": "familiar",
+                        }
+                    },
+                },
+            ),
+            (
+                "assessment_part_3",
+                {
+                    "briefing_style": "requirements_upfront",
+                    "reply_preference": "literal_narrow",
+                    "most": "logical",
+                    "least": "imaginative",
+                    "flawed_plan": "state_plainly",
+                    "answer_order": "reasoning_first",
+                    "background_assumption": "spell_out_background",
+                    "edit_boundary": "only_requested_edits",
+                    "bad_idea": "say_so_directly",
+                },
+            ),
+            (
+                "assessment_part_4",
+                {
+                    "request_1": "Help me plan today.",
+                    "request_2": "Review this project outline.",
+                    "request_3": "",
+                },
+            ),
+            (
+                "workspace_discovery",
+                {
+                    "outcome": "Publish a weekly project status report.",
+                    "success_criteria": "The report is ready every Friday.",
+                    "current_workflow": "I collect notes and write the report manually.",
+                    "applications": [
+                        {
+                            "application_id": "google_drive",
+                            "name": "Google Drive",
+                            "already_uses": True,
+                            "wants_added": True,
+                            "current_activities": "Store weekly notes.",
+                            "desired_activities": "Collect the source notes.",
+                            "inputs_outputs": "Notes in, report draft out.",
+                            "control_level": "prepare_for_approval",
+                        }
+                    ],
+                    "inputs": "Weekly notes.",
+                    "outputs": "A status report.",
+                    "control_level": "prepare_for_approval",
+                    "first_workspace": "A report drafting workspace.",
+                },
+            ),
+        )
+        for stage, payload in stages:
+            store.save_onboarding_stage(user_id, stage, payload)
+        store.complete_onboarding(user_id, CONNECTORS)
 
     def test_unauthenticated_state_is_explicit(self):
         response = self.client.get("/api/state")
@@ -209,7 +280,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.complete_survey()
         state = self.client.get("/api/state").json
         self.assertEqual("workspace", state["state"])
-        self.assertIn("Google Drive, Slack", state["operator"])
+        self.assertIn("# Cordia operator profile", state["operator"])
         self.assertGreaterEqual(len(state["messages"]), 10)
         self.assertEqual(
             {"provider": "Cordia", "model": "server-default", "source": "server"},

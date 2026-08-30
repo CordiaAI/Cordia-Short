@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -11,6 +12,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+
+from cordia.onboarding import compile_documents, score_profile
+from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
 
 SURVEY_FIELDS = ("name", "role", "goal", "apps", "communication")
@@ -274,15 +278,18 @@ class Store:
         clean = value.strip()
         if not clean:
             raise ValueError("survey answer required")
+        self._save_survey_value(user_id, field, clean)
+        self._write_operator(user_id)
+
+    def _save_survey_value(self, user_id: int, field: str, value: str) -> None:
         with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO survey_answers(user_id, field, value) VALUES (?, ?, ?)
                 ON CONFLICT(user_id, field) DO UPDATE SET value = excluded.value
                 """,
-                (user_id, field, clean),
+                (user_id, field, value),
             )
-        self._write_operator(user_id)
 
     def survey_answers(self, user_id: int) -> dict[str, str]:
         with self._connection() as connection:
@@ -291,9 +298,178 @@ class Store:
             ).fetchall()
         return {row["field"]: row["value"] for row in rows}
 
-    def survey_complete(self, user_id: int) -> bool:
+    def legacy_survey_complete(self, user_id: int) -> bool:
         answers = self.survey_answers(user_id)
         return all(answers.get(field) for field in SURVEY_FIELDS)
+
+    def onboarding_stages(self, user_id: int) -> dict[str, dict]:
+        placeholders = ", ".join("?" for _ in PERSISTED_STAGES)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT field, value FROM survey_answers WHERE user_id = ? AND field IN ({placeholders})",
+                (user_id, *PERSISTED_STAGES),
+            ).fetchall()
+        stored = {row["field"]: row["value"] for row in rows}
+        stages = {}
+        for stage in PERSISTED_STAGES:
+            try:
+                document = json.loads(stored[stage])
+                if (
+                    not isinstance(document, dict)
+                    or document.get("schema_version") != SCHEMA_VERSION
+                    or not isinstance(document.get("completed_at"), str)
+                    or not document["completed_at"].strip()
+                ):
+                    continue
+                validated = validate_stage(stage, document.get("answers"))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            stages[stage] = {
+                "schema_version": validated["schema_version"],
+                "answers": validated["answers"],
+                "completed_at": document["completed_at"],
+            }
+        return stages
+
+    def onboarding_state(self, user_id: int) -> dict:
+        stages = self.onboarding_stages(user_id)
+        completed_stages = [stage for stage in PERSISTED_STAGES if stage in stages]
+        if self.survey_answers(user_id).get("survey_schema_version") == str(SCHEMA_VERSION):
+            current_stage = "workspace"
+        else:
+            missing = next((stage for stage in PERSISTED_STAGES if stage not in stages), None)
+            current_stage = missing or "workspace_review"
+            if missing == "workspace_discovery" and all(
+                stage in stages for stage in PERSISTED_STAGES[:4]
+            ):
+                current_stage = "profile_snapshot"
+        state = {
+            "schema_version": SCHEMA_VERSION,
+            "current_stage": current_stage,
+            "completed_stages": completed_stages,
+            "answers": {stage: stages[stage]["answers"] for stage in completed_stages},
+        }
+        if all(stage in stages for stage in PERSISTED_STAGES[:4]):
+            state["profile"] = score_profile(stages)
+        if "workspace_discovery" in stages:
+            state["review"] = {"workspace_discovery": stages["workspace_discovery"]["answers"]}
+        return state
+
+    def save_onboarding_stage(self, user_id: int, stage: str, payload: dict) -> dict:
+        if stage not in PERSISTED_STAGES:
+            raise ValueError("unknown onboarding stage")
+        saved_stages = self.onboarding_stages(user_id)
+        required_before = PERSISTED_STAGES[: PERSISTED_STAGES.index(stage)]
+        missing = next((name for name in required_before if name not in saved_stages), None)
+        if missing:
+            raise ValueError(f"complete {missing} first")
+        document = validate_stage(stage, payload)
+        document["completed_at"] = self._now().isoformat()
+        self._save_survey_value(
+            user_id,
+            stage,
+            json.dumps(document, sort_keys=True, separators=(",", ":")),
+        )
+        return document
+
+    def survey_complete(self, user_id: int) -> bool:
+        answers = self.survey_answers(user_id)
+        return answers.get("survey_schema_version") == str(SCHEMA_VERSION)
+
+    @staticmethod
+    def _connector_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+    def _selected_connection_statuses(
+        self, user_id: int, stages: dict[str, dict], connector_catalog: dict
+    ) -> dict[str, str]:
+        known_connectors = {}
+        for catalog_id, connector in connector_catalog.items():
+            connector_id = connector.get("id")
+            if not isinstance(connector_id, str):
+                continue
+            for identity in (
+                catalog_id,
+                connector_id,
+                connector.get("name"),
+                *connector.get("aliases", []),
+            ):
+                if isinstance(identity, str):
+                    known_connectors[self._connector_key(identity)] = connector_id
+        selected_ids = set()
+        for application in stages["workspace_discovery"]["answers"]["applications"]:
+            for identity in (application["application_id"], application["name"]):
+                if isinstance(identity, str):
+                    connector_id = known_connectors.get(self._connector_key(identity))
+                    if connector_id:
+                        selected_ids.add(connector_id)
+        return {
+            connector_id: status
+            for connector_id in selected_ids
+            if (status := self.connection_status(user_id, connector_id)) is not None
+        }
+
+    def _operator_adjustments(self, user_id: int) -> list[dict]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, response_id, label, axis, previous, current, created_at
+                FROM operator_adjustments WHERE user_id = ? ORDER BY id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _remove_temporary_directory(directory: Path, files: list[Path]) -> None:
+        for file_path in files:
+            if file_path.exists():
+                file_path.unlink()
+        if directory.exists():
+            directory.rmdir()
+
+    def complete_onboarding(self, user_id: int, connector_catalog: dict) -> dict[str, str]:
+        stages = self.onboarding_stages(user_id)
+        missing = next((stage for stage in PERSISTED_STAGES if stage not in stages), None)
+        if missing:
+            raise ValueError(f"complete {missing} first")
+        for stage in PERSISTED_STAGES:
+            validate_stage(stage, stages[stage]["answers"])
+        documents = compile_documents(
+            stages,
+            self._operator_adjustments(user_id),
+            connector_catalog,
+            self._selected_connection_statuses(user_id, stages, connector_catalog),
+        )
+        workspace = self.workspace_root / str(user_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        temporary_directory = workspace / f".onboarding-{secrets.token_hex(8)}"
+        temporary_directory.mkdir()
+        destinations = {name: workspace / name for name in documents}
+        temporary_files = [temporary_directory / name for name in documents]
+        backups = {
+            name: destination.read_bytes() if destination.exists() else None
+            for name, destination in destinations.items()
+        }
+        try:
+            for name, contents in documents.items():
+                (temporary_directory / name).write_text(contents, encoding="utf-8")
+            try:
+                for name in documents:
+                    (temporary_directory / name).replace(destinations[name])
+            except Exception:
+                for name, destination in destinations.items():
+                    backup = backups[name]
+                    if backup is None:
+                        if destination.exists():
+                            destination.unlink()
+                    else:
+                        destination.write_bytes(backup)
+                raise
+        finally:
+            self._remove_temporary_directory(temporary_directory, temporary_files)
+        self._save_survey_value(user_id, "survey_schema_version", str(SCHEMA_VERSION))
+        return documents
 
     def operator_profile(self, user_id: int) -> dict[str, int]:
         with self._connection() as connection:
