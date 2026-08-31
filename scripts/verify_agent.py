@@ -63,6 +63,11 @@ def checked(response, label):
     return body
 
 
+def require_current_artifact(result, expected_id):
+    artifact = result.get("artifact")
+    assert artifact and artifact.get("id") == expected_id and artifact.get("rows"), "The current run did not produce the expected nonempty artifact"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="Authorize this billable, real-provider test")
@@ -134,6 +139,7 @@ def main():
             refreshed = checked(client.post("/api/chat", json={"message": "Refresh the same OpenAI model window using the connector, and tell me how many models the tool returned. Do not create a second window."}), "refresh")
             artifacts = [a for a in refreshed["artifacts"] if a.get("source") == "openai_api"]
             assert len(artifacts) == 1 and artifacts[0]["id"] == first_id, "Refresh duplicated the artifact"
+            require_current_artifact(refreshed, first_id)
             run = refreshed.get("run") or refreshed.get("agent_run") or {}
             assert run.get("status") == "completed" and run.get("model_calls", 0) >= 2, "Refresh did not complete a model/tool/result/model loop"
             assert run.get("source") == "connector" and run.get("model") == args.model, "Agent ignored user-selected provider"
