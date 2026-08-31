@@ -270,6 +270,32 @@ class AgentRunTests(unittest.TestCase):
         service.revise(self.user, self.store.messages(self.user)[-1]["id"])
         self.assertIn("gpt-test-model", model.requests[-1][0].content)
 
+    def test_failed_operation_revision_retains_answer_evidence_and_failure_status(self):
+        self.verify()
+        original_answer = "The model list could not be loaded. The provider request failed."
+        service, model = self.service([
+            call("run_operation", connector_id="openai_api", operation_id="list_models"),
+            AIMessage(content=original_answer), AIMessage(content="- Provider unavailable."),
+            AIMessage(content="- Still unavailable."),
+        ])
+        with patch.object(self.runtime, "transport", side_effect=OSError("provider down")):
+            original = service.start(self.user, "List models")
+        self.assertEqual("failed", original["run"]["status"])
+        response_id = self.store.messages(self.user)[-1]["id"]
+        calls_before = len(self.http_calls)
+        revised = service.revise(self.user, response_id)
+        self.assertIn(original_answer, model.requests[-1][0].content)
+        self.assertIn('"ok": false', model.requests[-1][0].content)
+        self.assertIn("Provider workspace operation failed", model.requests[-1][0].content)
+        self.assertEqual("failed", revised["run"]["status"])
+        repeated = service.revise(self.user, self.store.messages(self.user)[-1]["id"])
+        self.assertEqual("failed", repeated["run"]["status"])
+        self.assertIn("- Provider unavailable.", model.requests[-1][0].content)
+        self.assertIn('"ok": false', model.requests[-1][0].content)
+        self.assertEqual("List models", model.requests[-1][-1].content)
+        self.assertEqual(calls_before, len(self.http_calls))
+        self.assertEqual([], self.store.artifacts(self.user))
+
 
 class AgentRouteTests(unittest.TestCase):
     setUp = AgentRunTests.setUp
@@ -283,6 +309,7 @@ class AgentRouteTests(unittest.TestCase):
         app = create_app({"TESTING": True, "DATABASE": self.store.db_path,
                           "WORKSPACE_ROOT": self.store.workspace_root},
                          agent=agent_module.Agent("model-fixture", chat_model=model),
+                         agent_factory=lambda key, chosen: agent_module.Agent(key, chosen, chat_model=model),
                          connector_runtime=self.runtime)
         client = app.test_client()
         client.set_cookie("cordia_session", self.store.create_session(self.user))
@@ -376,3 +403,28 @@ class AgentRouteTests(unittest.TestCase):
         self.assertEqual([], model.requests)
         self.assertEqual("connector", result.json["agent_runtime"]["source"])
         self.assertIn("unavailable", result.json["agent_runtime"]["provider"])
+
+    def test_changed_model_before_callback_ends_run_without_wedging_new_chat(self):
+        _, client, _ = self.app([call("connect_service", connector_id="openai_api"), AIMessage(content="New request answered")])
+        client.post("/api/chat", json={"message": "Connect OpenAI"})
+        self.store.save_connection_setting(self.user, "__runtime__", "agent_model", "openai_api")
+        self.store.save_connection_setting(self.user, "openai_api", "model", "gpt-4.1-mini")
+        callback = client.post("/api/connectors/setup", json={"connector_id": "openai_api", "credentials": {"api_key": "fixture-secret"}})
+        self.assertEqual(200, callback.status_code)
+        self.assertEqual("failed", callback.json["agent_run"]["status"])
+        self.assertIn("could not resume", callback.json["messages"][-1]["content"])
+        next_chat = client.post("/api/chat", json={"message": "Help with a new request"})
+        self.assertEqual(200, next_chat.status_code, next_chat.json)
+
+    def test_unavailable_selected_model_before_callback_ends_run_without_wedging_chat(self):
+        _, client, _ = self.app([call("connect_service", connector_id="openai_api"), AIMessage(content="New request answered")])
+        client.post("/api/chat", json={"message": "Connect OpenAI"})
+        # Simulates the external credential becoming unavailable during callback
+        # continuation, while connector verification remains the real HTTP fixture.
+        with patch.object(self.runtime, "agent_provider", side_effect=RuntimeError("vault unavailable")):
+            callback = client.post("/api/connectors/setup", json={"connector_id": "openai_api", "credentials": {"api_key": "fixture-secret"}})
+        self.assertEqual(200, callback.status_code)
+        self.assertEqual("failed", callback.json["agent_run"]["status"])
+        self.assertIn("could not resume", callback.json["messages"][-1]["content"])
+        next_chat = client.post("/api/chat", json={"message": "Help with a new request"})
+        self.assertEqual(200, next_chat.status_code, next_chat.json)
