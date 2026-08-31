@@ -1,5 +1,18 @@
 # Cordia Short Design QA
 
+## Real-model local HTTP smoke test — 2026-08-30
+
+After explicit user approval to reuse the existing OpenAI key, the isolated local server at `http://127.0.0.1:5058` was restarted at source commit `5a111c4`. Only `OPENAI_API_KEY` was loaded into that process from the existing ignored project env file; no secret was copied into this worktree or displayed. The real default `Agent` used `gpt-5-mini` and the OpenAI Responses API, with no injected transport or workspace double.
+
+Using the synthetic account whose survey/discovery was completed in the earlier browser journey, real HTTP sign-in and two `/api/chat` requests succeeded:
+
+1. Asked for the first useful workflow, selected apps, and approval boundary, without taking actions. HTTP 200 / `ok: true`; the model identified a source-linked weekly project report, Google Drive and Workshop Tracker, and review/approval before sending or editing. No setup card or artifact was produced.
+2. Asked to connect Google Drive and show its secure setup card without listing files. HTTP 200 / `ok: true`; the actual runtime returned `type: connector_setup`, `connector_id: google_drive`, `status: needs_configuration`, and the missing Google client configuration names. Google Drive remained `setup_required`; Workshop Tracker remained `planned`; no artifact was produced.
+
+This proves real model response -> application action dispatch -> persisted setup-card behavior over HTTP. It does not prove Google OAuth authorization, connected data, artifact rendering, or the corresponding browser chat interaction. The isolated server deliberately loaded only the approved OpenAI key; its missing Google configuration is not evidence that the live beta server lost its configuration. No Google credentials or consent flow were used.
+
+The prior final source review and its four fixes were independently approved, and the controller's fresh source run passed 153 Python tests and 20 Node controller tests. GitHub CI passed for draft PR #9 at `5a111c4`. Browser post-fix evidence also confirmed Continue disabled for partial Part 1 answers, enabled with all 20, and Part 2 resume after reload. Visual comparison, native choice keyboard activation, browser real-provider/pending-state checks, and authenticated connector/artifact/Live View checks remain open. Nothing has been merged or deployed.
+
 ## Final-review source fix evidence — 2026-08-30
 
 This source/test-only fix wave starts from `3b12950`. It does not replace the earlier browser checkpoint or establish a new visual, native-keyboard, or provider acceptance pass.
