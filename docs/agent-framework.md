@@ -49,7 +49,11 @@ Automated scripted-model/HTTP-fixture tests establish control-flow and failure-b
 
 ## Release status
 
-Implemented and independently reviewed; all review findings are resolved. GitHub checks remain a release gate. **Not deployed to beta.** The evidence below is local, not a statement about the running server.
+PR #9 was merged as `cbbd4f8` and deployed to beta on 2026-08-31. Dependencies installed successfully; 183 tests passed as the service user after fixing access to the existing Node test runner. Public health returned `ok: true`, and the public onboarding script hash matched the checkout. The signed-in browser loaded the new assessment. These checks do not establish a complete live user journey.
+
+The deployment's real GPT-5-mini verifier failed twice: the model checked connection status, asked permission again to prepare already-requested setup, and finished without a durable authorization wait. The narrow follow-up clarifies that an explicit connection request authorizes **preparing** the secure card, not granting account access. Backend authorization gates remain unchanged. This is model guidance, not a deterministic guarantee.
+
+After that correction, the unchanged real-provider verifier passed locally with GPT-5-mini and GPT-4.1-mini: secure setup, verification, durable continuation and refresh of the same 124-row artifact. First-flow observations were 23.94s and 9.94s. All 183 automated tests also passed. The correction still requires review, CI and deployment verification; do not treat these local results as server evidence. Original pre-deployment evidence follows.
 
 Executed 2026-08-31:
 
