@@ -90,7 +90,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
 
     def test_onboarding_controller_behavior(self):
         result = subprocess.run(
-            ["node", "--test", "tests/onboarding.test.cjs"],
+            ["node", "--test", "tests/onboarding.test.cjs", "tests/setup.test.cjs"],
             cwd=ROOT, text=True, capture_output=True,
             env={**os.environ, "CORDIA_TEST_PYTHON": sys.executable},
         )

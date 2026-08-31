@@ -29,6 +29,14 @@ Existing users with the old five scalar Surveyor answers must complete version-2
 
 Current local verification and remaining browser/provider limitations are recorded in [design-qa.md](design-qa.md). Local test results do not mean this branch is merged or deployed.
 
+## Bounded agent runtime
+
+The current runtime uses LangChain `create_agent` on LangGraph, not the historical single-action handler below. It reads the three workspace documents, calls declared tools, sees the actual results and then replies. A missing connection pauses execution at a secure setup card. Server verification resumes the same task from its durable checkpoint; **Cancel setup** releases the pending task without performing it.
+
+Survey completion prepares the first supported requested connection automatically. Unsupported applications remain planned. Model requests are bounded to six calls and eight tool executions per task, with one tool at a time. Response adjustments revise wording from saved evidence without replaying operations. Framework research, real-provider evidence and limits are in [agent-framework.md](docs/agent-framework.md).
+
+Checkpoint files and `agent-locks/` are created beside the configured database. The service account needs write access there. These contain private execution data and belong in restricted backups, never Git. This is a single-VPS design, not a tested multi-host service. Per-task limits are not account spending quotas or public-launch abuse protection.
+
 ## Historical runtime evidence (2026-08-26; not current onboarding release proof)
 
 - Registration, password authentication, sessions, Surveyor, readable `operator.md`, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
@@ -48,11 +56,12 @@ Current local verification and remaining browser/provider limitations are record
 
 ## Run locally
 
-From this development worktree in PowerShell (the shared virtual environment is two directories above it):
+From this development worktree in PowerShell (use its tested local virtual environment):
 
 ```powershell
 Set-Location "C:\Users\jacks\.codex\.chatgpt-projects\g-p-6a7ba4e731b481919a357f044572274b\cordia_short\.worktrees\surveyor-fde-discovery"
-& "../../.venv/Scripts/python.exe" app.py
+& ".venv/Scripts/python.exe" -m pip install -r requirements.txt
+& ".venv/Scripts/python.exe" app.py
 ```
 
 Open [the local application](http://127.0.0.1:5050/). The default local database and workspaces are under `data/` in this worktree. If running from the main `cordia_short` checkout instead, use `.\.venv\Scripts\python.exe`.
@@ -113,16 +122,16 @@ No credential values are included in any MCP resource. The same MCP server contr
 ## Run tests
 
 ```powershell
-& "../../.venv/Scripts/python.exe" -m unittest discover -s tests -v
-& "../../.venv/Scripts/python.exe" -m py_compile app.py cordia/agent.py cordia/connectors.py cordia/connector_runtime.py cordia/onboarding.py cordia/store.py cordia/survey.py cordia/workspace_mcp.py
+& ".venv/Scripts/python.exe" -m unittest discover -s tests -v
+& ".venv/Scripts/python.exe" -m compileall -q app.py cordia scripts tests
 node --check static/app.js
 node --check static/onboarding.js
-$env:CORDIA_TEST_PYTHON = (Resolve-Path "../../.venv/Scripts/python.exe").Path
-node --test tests/onboarding.test.cjs
+$env:CORDIA_TEST_PYTHON = (Resolve-Path ".venv/Scripts/python.exe").Path
+node --test tests/onboarding.test.cjs tests/setup.test.cjs
 git diff --check
 ```
 
-The complete onboarding service journey uses a real temporary SQLite database, Store, compiler, generated files, and Agent request construction. Only its model transport and recording workspace-MCP boundary are test doubles. The separate connector journey uses the real MCP/connector pipeline with deterministic provider responses. Neither is evidence of live model or provider access.
+The automated onboarding and graph journeys use real temporary SQLite databases, compiler, generated files and graph execution. Scripted models and provider HTTP responses are external-boundary doubles, not proof of provider availability. The separate opt-in `scripts/verify_agent.py --live` check uses actual model and connector requests; see its evidence and private-environment instructions in the framework document.
 
 ## Scope guardrails
 

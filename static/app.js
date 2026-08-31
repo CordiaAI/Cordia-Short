@@ -105,7 +105,8 @@ function renderSetupCard(card) {
       : `<span class="status-pill">${escapeHtml(String(card.status || "Setup required").replaceAll("_", " "))}</span>`;
   container.innerHTML = `
     <div class="setup-copy"><small>CONNECTOR SETUP</small><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(card.message)}</p></div>
-    ${action}`;
+    ${action}
+    <button type="button" data-connector-cancel data-connector-id="${escapeHtml(card.connector_id)}">Cancel setup</button>`;
   container.hidden = false;
 }
 
@@ -321,6 +322,7 @@ composer.addEventListener("submit", async (event) => {
   if (!message || input.disabled) return;
   input.value = "";
   input.disabled = true;
+  byId("notice").hidden = true;
   renderPendingMessage(message);
   try {
     const state = await api("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
@@ -369,6 +371,22 @@ byId("messages").addEventListener("click", async (event) => {
     errorNotice.textContent = error.message;
     errorNotice.hidden = false;
   }
+});
+
+byId("setup-card").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-connector-cancel]");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    render(await api("/api/connectors/cancel", {
+      method: "POST", body: JSON.stringify({ connector_id: button.dataset.connectorId }),
+    }));
+    byId("notice").textContent = "Setup cancelled. You can ask Cordia to connect it again whenever you’re ready.";
+  } catch (error) {
+    button.disabled = false;
+    byId("notice").textContent = error.message;
+  }
+  byId("notice").hidden = false;
 });
 
 byId("setup-card").addEventListener("submit", async (event) => {
