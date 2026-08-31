@@ -49,13 +49,15 @@ Automated scripted-model/HTTP-fixture tests establish control-flow and failure-b
 
 ## Release status
 
-Implemented locally; independent review and GitHub checks are release gates. **Not deployed to beta.** The evidence below is local, not a statement about the running server.
+Implemented and independently reviewed; all review findings are resolved. GitHub checks remain a release gate. **Not deployed to beta.** The evidence below is local, not a statement about the running server.
 
 Executed 2026-08-31:
 
-- Full suite after implementation and the selected-provider no-fallback guard: **178 Python tests passed in 39.219 seconds**, including the Node controller suites (20 onboarding cases plus two setup-cancel cases). External model/HTTP boundaries in these tests are fixtures. Intentional provider-failure and disk-full tests emitted expected tracebacks.
+- Final full suite after review fixes: **183 Python tests passed in 39.693 seconds**, including the Node controller suites (20 onboarding cases plus two setup-cancel cases). External model/HTTP boundaries in these tests are fixtures. Intentional provider-failure and disk-full tests emitted expected tracebacks.
 - Actual GPT-4.1-mini and GPT-5-mini model calls completed the registered-user → survey → Markdown memory → secure setup → app reconstruction → real API verification → original-run continuation → 124-row model artifact → stable-identity refresh path. Initial measured setup/continuation times were 10.52s and 28.84s respectively; these are individual observations, not benchmarks or service guarantees.
 - A further real GPT-4.1-mini run selected the user's connected model via `/api/connectors/select`, then completed a two-model-call / one-tool-call refresh with `source: connector`. Reported final-turn usage was 3502 input and 75 output tokens. The model catalog was re-read from the actual provider, not fabricated.
+- Independent review tightened the verifier: saved workspace state alone cannot prove a new refresh; the current run must also return a nonempty artifact with the expected ID. Both models passed that stronger check with user-selected provider keys. Final observations: GPT-4.1-mini 7.34s setup/continuation, 3586/67 input/output tokens on refresh; GPT-5-mini 19.94s, 3782/851 tokens. Each refresh used two model calls and one tool, returning the same 124-row artifact.
+- Review also corrected loss of failure evidence during response revision and a hidden pending run after a model change during authorization. Focused failing regressions preceded the fixes; independent re-review accepted all three corrections.
 - In the local browser, a fresh QA account completed all four assessment parts, snapshot, workflow discovery, review and workspace creation. The selected OpenAI connection's credential card appeared automatically, before any chat request.
 - Browser chat: Enter displayed the user's message and infinity working indicator immediately; the real model produced the secure setup pause. Cancel ended the pending task, removed its form, and allowed a subsequent real-model request. The subsequent reply was two short bullets. This is final-answer transport, not token streaming.
 - Mouse-based survey completion worked. Browser automation's Enter/Space on survey choice buttons did not establish native activation; that keyboard check remains unresolved and is not counted as passed. Composer Enter did pass. No speculative keyboard patch was added.
