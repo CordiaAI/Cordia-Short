@@ -13,6 +13,8 @@ from cordia.connectors import CONNECTORS
 from cordia.connector_runtime import ConnectorRuntime
 from cordia.store import Store
 from tests.test_app import RecordingWorkspaceClient
+from tests.agent_helpers import ScriptedModel, call
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 def valid_part_one_payload():
@@ -644,7 +646,7 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.model_requests = []
         self.workspace = RecordingWorkspaceClient()
-        agent = Agent("test-model-key", transport=self.model_transport)
+        agent = Agent("test-model-key", chat_model=ScriptedModel(callback=self.model_transport))
         self.app = create_app(
             {
                 "TESTING": True,
@@ -662,15 +664,13 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def model_transport(self, url, headers, payload, timeout):
+    def model_transport(self, messages):
+        payload = {"input": [{"role": "developer" if m.type == "system" else "user" if m.type == "human" else "assistant", "content": m.content} for m in messages]}
         self.model_requests.append(payload)
         connecting = "connect" in payload["input"][-1]["content"].lower()
-        return {"output_text": json.dumps({
-            "action": "propose_connector" if connecting else "speak",
-            "message": "Authorize Google Drive in the setup card." if connecting else "Review the report plan.",
-            "connector_id": "google_drive" if connecting else None,
-            "operation_id": None,
-        })}
+        if connecting and not isinstance(messages[-1], ToolMessage):
+            return call("connect_service", connector_id="google_drive")
+        return AIMessage(content="Review the report plan.")
 
     def register_and_complete(self):
         registered = self.client.post("/api/register", json={
@@ -690,7 +690,11 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertEqual(200, completed.status_code, completed.json)
         self.assertEqual("workspace", completed.json["state"])
         self.assertEqual([], self.model_requests)
-        self.assertEqual([], self.workspace.calls)
+        if completed.json["selected_applications"][0]["status"] != "verified":
+            self.assertEqual("google_drive", completed.json["setup_card"]["connector_id"])
+            self.assertEqual([(1, "connector_start", {"connector_id": "google_drive"})], self.workspace.calls)
+        else:
+            self.assertEqual([], self.workspace.calls)
         return completed.json
 
     def test_register_to_compiled_workspace_to_connector_proposal(self):
@@ -703,7 +707,7 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertIn("Google Drive", documents["connectors.md"])
         self.assertIn("Status: setup_required", documents["connectors.md"])
         self.assertIn("Smallest valuable workspace slice", documents["fde.md"])
-        self.assertIsNone(completed["setup_card"])
+        self.assertEqual("oauth_redirect", completed["setup_card"]["type"])
         self.assertEqual("setup_required", completed["selected_applications"][0]["status"])
         self.assertIsNone(self.store.connection_status(1, "google_drive"))
         self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
@@ -775,7 +779,7 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertEqual(0, adjusted.json["adjustment"]["current"])
         self.assertEqual(0, self.store.operator_profile(1)["context"])
         self.assertIn("Context interpretation: Balanced (0)", adjusted.json["operator"])
-        self.assertIn("Context interpretation: Balanced (0)", self.model_requests[-1]["input"][2]["content"])
+        self.assertIn("Context interpretation: Balanced (0)", self.model_requests[-1]["input"][0]["content"])
         self.assertEqual("Plan my report", self.model_requests[-1]["input"][-1]["content"])
         for previous, current in ((0, 1), (1, 1)):
             followup = self.client.post(f"/api/responses/{response_id}/adjust", json={"axis": "context", "target": 1})
@@ -794,26 +798,21 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertEqual(-1, adjusted.json["adjustment"]["current"])
         self.assertIn("Directness preference: Measured / indirect (-1)", adjusted.json["operator"])
         self.assertEqual(-1, self.store.operator_profile(1)["directness"])
-        self.assertIn("Directness preference: Measured / indirect (-1)", self.model_requests[-1]["input"][2]["content"])
+        self.assertIn("Directness preference: Measured / indirect (-1)", self.model_requests[-1]["input"][0]["content"])
         self.store.complete_onboarding(1, CONNECTORS)
         self.assertEqual(adjusted.json["operator"], self.store.operator_markdown(1))
 
 
-class ScriptedConnectorAgent:
-    def respond(self, memory, messages):
-        if "connect" in messages[-1]["content"].lower():
-            return {
-                "action": "propose_connector",
-                "message": "Google Drive is ready for authorization.",
-                "connector_id": "google_drive",
-                "operation_id": None,
-            }
-        return {
-            "action": "run_operation",
-            "message": "I added your recent Drive files to the workspace.",
-            "connector_id": "google_drive",
-            "operation_id": "list_recent_files",
-        }
+class ScriptedConnectorAgent(Agent):
+    def __init__(self):
+        super().__init__("fixture-model-key", chat_model=ScriptedModel(callback=self.answer))
+
+    def answer(self, messages):
+        if isinstance(messages[-1], ToolMessage):
+            return AIMessage(content="- The requested provider operation finished.")
+        if "connect" in messages[-1].content.lower():
+            return call("connect_service", connector_id="google_drive")
+        return call("run_operation", connector_id="google_drive", operation_id="list_recent_files")
 
 
 class RealMCPConnectorJourneyTests(unittest.TestCase):

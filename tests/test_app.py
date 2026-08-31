@@ -5,37 +5,34 @@ from unittest.mock import patch
 
 from app import create_app
 from cordia.connectors import CONNECTORS
+from cordia.agent import Agent
 from cordia.workspace_mcp import WorkspaceMCPError
+from langchain_core.messages import AIMessage, ToolMessage
+from tests.agent_helpers import ScriptedModel, call
 
 
-class FakeAgent:
+class FakeAgent(Agent):
     def __init__(self):
         self.calls = []
-        self.model = "server-default"
+        super().__init__("model-fixture", "server-default", chat_model=ScriptedModel(callback=self.answer))
 
-    def respond(self, memory, messages):
-        self.calls.append((memory, list(messages)))
-        latest = messages[-1]["content"].lower()
+    def answer(self, messages):
+        memory = "\n".join(m.content for m in messages if m.type == "system")
+        public = [{"role": "user" if m.type == "human" else "assistant", "content": m.content}
+                  for m in messages if m.type in {"human", "ai"}]
+        self.calls.append((memory, public))
+        if isinstance(messages[-1], ToolMessage):
+            if '"ok": false' in messages[-1].content:
+                return AIMessage(content="The provider operation failed; no result was saved.")
+            return AIMessage(content="I checked the provider results.")
+        latest = public[-1]["content"].lower()
+        if "No tools or new operations" in memory:
+            return AIMessage(content="Here is the revised plan.")
         if "connect" in latest:
-            return {
-                "action": "propose_connector",
-                "message": "I can set up Google Drive.",
-                "connector_id": "google_drive",
-                "operation_id": None,
-            }
+            return call("connect_service", connector_id="google_drive")
         if "recent" in latest:
-            return {
-                "action": "run_operation",
-                "message": "I checked your recent files.",
-                "connector_id": "google_drive",
-                "operation_id": "list_recent_files",
-            }
-        return {
-            "action": "speak",
-            "message": "Tell me what you want the workspace to do.",
-            "connector_id": None,
-            "operation_id": None,
-        }
+            return call("run_operation", connector_id="google_drive", operation_id="list_recent_files")
+        return AIMessage(content="Tell me what you want the workspace to do.")
 
 
 class FakeRuntime:
@@ -83,6 +80,7 @@ class FakeRuntime:
 
     def finish_connection(self, user_id, connector_id, setup_result):
         self.finished.append((user_id, connector_id, setup_result))
+        self.store.save_connection(user_id, connector_id, "verified", setup_result)
         return {"connector_id": connector_id, "status": "verified"}
 
     def select_value(self, user_id, connector_id, value):
@@ -174,6 +172,7 @@ class ApplicationJourneyTests(unittest.TestCase):
             workspace_client=self.workspace,
         )
         self.workspace.store = self.app.extensions["cordia_store"]
+        self.runtime.store = self.workspace.store
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -418,6 +417,8 @@ class ApplicationJourneyTests(unittest.TestCase):
     def test_agent_operation_saves_visible_artifact(self):
         self.register()
         self.complete_survey()
+        self.workspace.calls.clear()
+        self.workspace.store.save_connection(1, "google_drive", "verified")
 
         response = self.client.post("/api/chat", json={"message": "Show my recent files"})
 
@@ -434,11 +435,14 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.register()
         self.complete_survey()
         self.workspace.fail_tool = "connector_call"
+        self.workspace.store.save_connection(1, "google_drive", "verified")
 
         response = self.client.post("/api/chat", json={"message": "Show my recent files"})
 
-        self.assertEqual(502, response.status_code)
-        self.assertIn("provider operation failed", response.json["error"])
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json["ok"])
+        self.assertEqual("failed", response.json["run"]["status"])
+        self.assertIn("provider operation failed", response.json["assistant"])
         self.assertEqual([], response.json["artifacts"])
 
     def test_signout_ends_session(self):
