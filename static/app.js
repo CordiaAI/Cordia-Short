@@ -102,9 +102,8 @@ function renderSetupCard(card) {
       </form>`
     : card.action_url
       ? `<a href="${escapeHtml(card.action_url)}">Continue securely</a>`
-      : `<span class="status-pill">${escapeHtml(card.status)}</span>`;
+      : `<span class="status-pill">${escapeHtml(String(card.status || "Setup required").replaceAll("_", " "))}</span>`;
   container.innerHTML = `
-    <div class="assistant-mark">C</div>
     <div class="setup-copy"><small>CONNECTOR SETUP</small><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(card.message)}</p></div>
     ${action}`;
   container.hidden = false;
@@ -151,7 +150,7 @@ function renderArtifacts(artifacts = []) {
   const visibleArtifacts = artifacts.filter((artifact) => artifact.surface !== "workspace_settings");
   container.innerHTML = visibleArtifacts.length
     ? visibleArtifacts.map((artifact) => renderArtifact(artifact)).join("")
-    : `<article class="artifact-window"><div class="artifact-title"><strong>Your first artifact will appear here</strong><span>READY</span></div><div class="artifact-body"><p style="padding:18px;color:var(--muted)">Ask Cordia to connect a service or organize part of your work.</p></div></article>`;
+    : `<article class="artifact-window"><div class="artifact-title"><strong>Your first artifact will appear here</strong></div><div class="artifact-body"><p class="artifact-empty">Ask Cordia to connect a service or organize part of your work.</p></div></article>`;
   renderWorkspaceSettings();
 }
 
@@ -281,7 +280,13 @@ async function refresh() {
 document.querySelectorAll("[data-auth-mode]").forEach((button) => {
   button.addEventListener("click", () => {
     authMode = button.dataset.authMode;
-    document.querySelectorAll("[data-auth-mode]").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll("[data-auth-mode]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    byId("auth-title").textContent = authMode === "register" ? "Create account" : "Sign in";
+    byId("password").autocomplete = authMode === "register" ? "new-password" : "current-password";
+    byId("password-help").hidden = authMode !== "register";
     byId("auth-submit").textContent = authMode === "register" ? "Create workspace" : "Sign in";
     byId("auth-error").textContent = "";
   });

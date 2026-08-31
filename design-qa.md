@@ -1,5 +1,46 @@
 # Cordia Short Design QA
 
+## Main-site visual alignment — 2026-08-31
+
+Scope: frontend refinement against `https://cordiacode.com/`, on top of `b5917c9`. No survey questions, scoring, authorization, provider, database, or connector execution changes. This section supersedes earlier visual-check status only; it is not a new live-provider or release acceptance result.
+
+### Source and comparison evidence
+
+- Source visual truth: the current main-site sign-in screen, its real `login-bg.jpg` and logo, and `Cordia/web/assets/cordia-ui.css`. The copied background is a local static asset, not a runtime dependency on the main site.
+- Local implementation: `http://localhost:5058/`; isolated synthetic-account data, not beta customer data.
+- Saved captures: `.superpowers/sdd/2026-08-31-visual-alignment/source-signin.jpg` and `local-signin.jpg` (ignored local evidence). Both are 1265 x 712 pixels, captured at reported 1280 x 720 CSS viewports, emitted together in one comparison input at matching browser-provided screenshot scale. No additional density transformation was applied. `local-workspace.jpg` records the final empty workspace state.
+- Full-view comparison: logo, botanical/data artwork, headline, centered sign-in card, fonts, neutral palette, rounded controls and shadows align. Form text is legible in the full capture, so an additional cropped comparison was unnecessary.
+- Deliberate functional differences: no nonfunctional password-reset link or email-verification promise; beta keeps its existing registration behavior. The form footer is shorter and controls retain comfortable touch targets. The focused tab has a visible accessibility ring.
+
+### Required fidelity surfaces
+
+- Typography: Inter body/controls, Newsreader display headings, Work Sans small labels, with local fallbacks. The auth headline retains the main site's Inter weight and wrapping.
+- Layout: shared 10/14/20px control/card/dialog radii, consistent spacing, narrower desktop chat, flexible artifact columns, collapsed saved-profile details. At mobile width the workspace stacks vertically and choices use one column.
+- Colors: white, near-black, moss `#4a5a42`, wash `#f6f7f4`, and restrained borders/shadows from the source stylesheet. Existing semantic error/notice colors remain distinct.
+- Assets: actual Cordia logo and main-site artwork replace the old text logo and unrelated sign-in treatment; aspect ratios are preserved.
+- Content: original assessment questions and instructions are unchanged. Removed the empty artifact's misleading READY label; setup status displays spaces instead of internal underscores. No new capability claims.
+
+### Iteration and interaction evidence
+
+The initial comparison found the old cream/olive palette, text-logo approximation, different sign-in composition, and dense always-open operator text. Those were replaced or refined, then recaptured against the source. No substantive visual mismatch remains in the compared sign-in state beyond the deliberate functional differences above.
+
+The independent focused code review found a P2 hover-contrast regression: the generic light hover background overrode the account avatar and active Live View button while retaining white text. Explicit dark hover styles now cover both. The account-avatar problem was reproduced through browser pointer hover before the fix and rechecked after reload; the active Live View selector was source-reviewed, not provider-interaction tested. No other scoped code regressions were reported.
+
+Browser checks used existing synthetic accounts and real local routes: sign-in mode/pressed state/password autocomplete; sign-in and sign-out; all seven survey stages; saved answers and reload resume; application selection and required discovery fields; review-to-workspace transition; the seven-item account menu; Connections & models open/close; and saved-profile disclosure. Desktop screenshots cover survey/profile/workspace/dialog states. Effective 375px captures cover auth, Parts 1–3, profile, discovery and review; Part 4 was inspected at desktop width. Measured mobile profile/discovery/review/auth roots did not exceed the viewport. The mobile workspace and settings dialog also rendered without page overflow. No new console error was observed in the checked workspace session.
+
+Fresh automated verification after the hover fix: **154 Python tests passed in 52.935 seconds**, including the 20-test Node onboarding-controller suite. `node --check static/app.js` and `git diff --check` passed. The intentionally injected disk-full test logged its expected traceback. The new markup/assets guard is not browser or provider proof.
+
+### Remaining acceptance limits
+
+- Native Enter activation is not confirmed: automation focused both a survey choice and the unrelated account-menu button, but did not activate either; pointer activation worked. Source inspection found ordinary native buttons with click handlers, without a shared Enter-prevention handler. Cause remains unconfirmed; no compensating keyboard handler was added.
+- Authenticated main-site pages were not accessible for a page-by-page source comparison. Their shared design tokens are reused; pixel identity for those pages is not claimed.
+- This isolated account has no verified Google credentials. Populated provider artifacts, the OAuth flow and Live View have not been re-verified with this stylesheet. The visible setup-required state is real, not a simulated successful connection.
+- Preview only. Nothing in this section establishes a merge or deployment to `beta.cordiacode.com`.
+
+Implementation checklist: shared visual changes and local regression tests complete; manual/native-keyboard check and authenticated connector-state review remain before full release acceptance.
+
+final result: blocked
+
 ## Real-model local HTTP smoke test — 2026-08-30
 
 After explicit user approval to reuse the existing OpenAI key, the isolated local server at `http://127.0.0.1:5058` was restarted at source commit `5a111c4`. Only `OPENAI_API_KEY` was loaded into that process from the existing ignored project env file; no secret was copied into this worktree or displayed. The real default `Agent` used `gpt-5-mini` and the OpenAI Responses API, with no injected transport or workspace double.

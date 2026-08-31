@@ -42,9 +42,23 @@ class WorkspaceUIContractTests(unittest.TestCase):
 
     def test_visual_tokens_match_cordia_identity(self):
         css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn("--ivory", css)
-        self.assertIn("--sage", css)
-        self.assertIn("--olive", css)
+        for token in ("--ivory: #ffffff", "--sage: #4a5a42", "--ink: #0b0b0b",
+                      "--sand: #f6f7f4", '"Newsreader"', '"Work Sans"'):
+            self.assertIn(token, css)
+
+    def test_shared_brand_assets_and_accessible_composer_are_present(self):
+        # Markup/assets guard only; native interaction and layout need browser QA.
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('for="message-input">Message Cordia</label>', html)
+        self.assertIn('aria-describedby="composer-help"', html)
+        self.assertIn('<details><summary>View saved profile</summary>', html)
+        self.assertIn('id="auth-title"', html)
+        self.assertIn('aria-label="Account access"', html)
+        self.assertIn('autocomplete="new-password"', html)
+        for asset in ("cordia-logo-header.webp", "login-bg.jpg"):
+            path = ROOT / "static" / "assets" / asset
+            self.assertTrue(path.is_file(), f"Missing branding asset: {asset}")
+            self.assertGreater(path.stat().st_size, 0)
 
     def test_onboarding_layer_and_script_are_present(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
