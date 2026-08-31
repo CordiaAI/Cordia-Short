@@ -1,39 +1,38 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app import create_app
+from cordia.connectors import CONNECTORS
+from cordia.agent import Agent
 from cordia.workspace_mcp import WorkspaceMCPError
+from langchain_core.messages import AIMessage, ToolMessage
+from tests.agent_helpers import ScriptedModel, call
 
 
-class FakeAgent:
+class FakeAgent(Agent):
     def __init__(self):
         self.calls = []
-        self.model = "server-default"
+        super().__init__("model-fixture", "server-default", chat_model=ScriptedModel(callback=self.answer))
 
-    def respond(self, memory, messages):
-        self.calls.append((memory, list(messages)))
-        latest = messages[-1]["content"].lower()
+    def answer(self, messages):
+        memory = "\n".join(m.content for m in messages if m.type == "system")
+        public = [{"role": "user" if m.type == "human" else "assistant", "content": m.content}
+                  for m in messages if m.type in {"human", "ai"}]
+        self.calls.append((memory, public))
+        if isinstance(messages[-1], ToolMessage):
+            if '"ok": false' in messages[-1].content:
+                return AIMessage(content="The provider operation failed; no result was saved.")
+            return AIMessage(content="I checked the provider results.")
+        latest = public[-1]["content"].lower()
+        if "No tools or new operations" in memory:
+            return AIMessage(content="Here is the revised plan.")
         if "connect" in latest:
-            return {
-                "action": "propose_connector",
-                "message": "I can set up Google Drive.",
-                "connector_id": "google_drive",
-                "operation_id": None,
-            }
+            return call("connect_service", connector_id="google_drive")
         if "recent" in latest:
-            return {
-                "action": "run_operation",
-                "message": "I checked your recent files.",
-                "connector_id": "google_drive",
-                "operation_id": "list_recent_files",
-            }
-        return {
-            "action": "speak",
-            "message": "Tell me what you want the workspace to do.",
-            "connector_id": None,
-            "operation_id": None,
-        }
+            return call("run_operation", connector_id="google_drive", operation_id="list_recent_files")
+        return AIMessage(content="Tell me what you want the workspace to do.")
 
 
 class FakeRuntime:
@@ -81,6 +80,7 @@ class FakeRuntime:
 
     def finish_connection(self, user_id, connector_id, setup_result):
         self.finished.append((user_id, connector_id, setup_result))
+        self.store.save_connection(user_id, connector_id, "verified", setup_result)
         return {"connector_id": connector_id, "status": "verified"}
 
     def select_value(self, user_id, connector_id, value):
@@ -172,6 +172,7 @@ class ApplicationJourneyTests(unittest.TestCase):
             workspace_client=self.workspace,
         )
         self.workspace.store = self.app.extensions["cordia_store"]
+        self.runtime.store = self.workspace.store
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -183,17 +184,156 @@ class ApplicationJourneyTests(unittest.TestCase):
             json={"email": "person@example.com", "password": "correct horse battery"},
         )
         self.assertEqual(201, response.status_code)
+        return response.json
+
+    def onboarding_stages(self):
+        return (
+            ("assessment_part_1", {"answers": {f"p1_{number:02d}": 3 for number in range(1, 21)}}),
+            (
+                "assessment_part_2",
+                {
+                    "domains": ["technology_software"],
+                    "ratings": {"technology_software": 4},
+                    "familiarity": {"technology_software": {"cloud storage": "familiar", "two-factor authentication": "familiar", "adaptive port throttling": "not_familiar", "browser cache": "familiar", "API": "familiar"}},
+                },
+            ),
+            ("assessment_part_3", {"briefing_style": "requirements_upfront", "reply_preference": "literal_narrow", "most": "logical", "least": "imaginative", "flawed_plan": "state_plainly", "answer_order": "reasoning_first", "background_assumption": "spell_out_background", "edit_boundary": "only_requested_edits", "bad_idea": "say_so_directly"}),
+            ("assessment_part_4", {"request_1": "Help me plan today.", "request_2": "Review this project outline.", "request_3": ""}),
+            ("workspace_discovery", {"outcome": "Publish a weekly project status report.", "success_criteria": "The report is ready every Friday.", "current_workflow": "I collect notes and write the report manually.", "applications": [{"application_id": "google_drive", "name": "Google Drive", "already_uses": True, "wants_added": True, "current_activities": "Store weekly notes.", "desired_activities": "Collect the source notes.", "inputs_outputs": "Notes in, report draft out.", "control_level": "prepare_for_approval"}], "inputs": "Weekly notes.", "outputs": "A status report.", "control_level": "prepare_for_approval", "first_workspace": "A report drafting workspace."}),
+        )
 
     def complete_survey(self):
-        for answer in [
-            "Jordan",
-            "Operations lead",
-            "Find client documents quickly",
-            "Google Drive, Slack",
-            "Big picture first",
-        ]:
-            response = self.client.post("/api/survey", json={"answer": answer})
+        for stage, payload in self.onboarding_stages():
+            response = self.client.put(f"/api/onboarding/{stage}", json=payload)
             self.assertEqual(200, response.status_code)
+        response = self.client.post("/api/onboarding/complete")
+        self.assertEqual(200, response.status_code)
+
+    def test_register_enters_version_two_onboarding(self):
+        state = self.register()
+        self.assertEqual("onboarding", state["state"])
+        self.assertEqual(2, state["onboarding"]["schema_version"])
+        self.assertEqual("assessment_part_1", state["onboarding"]["current_stage"])
+        self.assertNotIn("artifacts", state)
+
+    def test_stage_save_returns_next_resumable_stage(self):
+        self.register()
+        response = self.client.put(
+            "/api/onboarding/assessment_part_1", json=self.onboarding_stages()[0][1]
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("assessment_part_2", response.json["onboarding"]["current_stage"])
+
+    def test_onboarding_endpoints_require_authentication(self):
+        for response in (
+            self.client.get("/api/onboarding"),
+            self.client.put("/api/onboarding/assessment_part_1", json={}),
+            self.client.post("/api/onboarding/complete"),
+        ):
+            self.assertEqual(401, response.status_code)
+
+    def test_onboarding_validation_and_incomplete_completion_are_explicit(self):
+        self.register()
+        invalid = self.client.put("/api/onboarding/assessment_part_1", json={})
+        incomplete = self.client.post("/api/onboarding/complete")
+
+        self.assertEqual(400, invalid.status_code)
+        self.assertIn("Part 1", invalid.json["error"])
+        self.assertEqual(409, incomplete.status_code)
+        self.assertIn("assessment_part_1", incomplete.json["error"])
+
+    def test_onboarding_completion_creates_workspace_and_provides_all_context_to_agent(self):
+        self.register()
+        self.complete_survey()
+        root = Path(self.temp.name) / "workspaces" / "1"
+        state = self.client.get("/api/state").json
+        response = self.client.post("/api/chat", json={"message": "Help me plan this"})
+
+        self.assertEqual("workspace", state["state"])
+        self.assertTrue(all((root / name).exists() for name in ("operator.md", "connectors.md", "fde.md")))
+        self.assertEqual(200, response.status_code)
+        agent_context, _ = self.agent.calls[-1]
+        self.assertIn("# Cordia operator profile", agent_context)
+        self.assertIn("# Selected applications", agent_context)
+        self.assertIn("# First workspace plan", agent_context)
+
+    def test_onboarding_exposes_safe_catalog_and_normalized_selected_applications(self):
+        self.register()
+        store = self.app.extensions["cordia_store"]
+        store.save_connection(
+            1,
+            "google_drive",
+            "verified",
+            {"access_token": "provider-access-token", "client_secret_env": "GOOGLE_CLIENT_SECRET"},
+        )
+        saved = self.client.put(
+            "/api/onboarding/assessment_part_1", json=self.onboarding_stages()[0][1]
+        )
+        for stage, payload in self.onboarding_stages()[1:]:
+            discovery_saved = self.client.put(f"/api/onboarding/{stage}", json=payload)
+            self.assertEqual(200, discovery_saved.status_code)
+        state = self.client.get("/api/onboarding")
+        onboarding = state.json["onboarding"]
+        completed = self.client.post("/api/onboarding/complete")
+
+        self.assertEqual(
+            [{"id": item["id"], "name": item["name"]} for item in CONNECTORS.values()],
+            onboarding["application_catalog"],
+        )
+        selected = onboarding["selected_applications"][0]
+        self.assertEqual("Google Drive", selected["name"])
+        self.assertEqual("google_drive", selected["registry_id"])
+        self.assertEqual("Store weekly notes.", selected["current_activities"])
+        self.assertEqual("Collect the source notes.", selected["desired_activities"])
+        self.assertEqual("verified", selected["status"])
+        self.assertEqual(onboarding["selected_applications"], onboarding["review"]["selected_applications"])
+        self.assertEqual(onboarding["selected_applications"], completed.json.get("selected_applications"))
+        self.assertNotIn("auth_kind", selected)
+        for response in (saved, discovery_saved, state, completed):
+            body = response.get_data(as_text=True)
+            self.assertNotIn("client_secret_env", body)
+            self.assertNotIn("GOOGLE_CLIENT_SECRET", body)
+            self.assertNotIn("access_token", body)
+            self.assertNotIn("provider-access-token", body)
+
+    def test_completed_onboarding_rejects_stage_edits(self):
+        self.register()
+        self.complete_survey()
+        response = self.client.put(
+            "/api/onboarding/assessment_part_1", json=self.onboarding_stages()[0][1]
+        )
+
+        self.assertEqual(409, response.status_code)
+
+    def test_onboarding_io_failure_keeps_user_in_onboarding(self):
+        self.register()
+        for stage, payload in self.onboarding_stages():
+            self.assertEqual(200, self.client.put(f"/api/onboarding/{stage}", json=payload).status_code)
+        store = self.app.extensions["cordia_store"]
+        with patch.object(store, "complete_onboarding", side_effect=OSError("disk full")):
+            response = self.client.post("/api/onboarding/complete")
+
+        self.assertEqual(500, response.status_code)
+        self.assertEqual("onboarding", self.client.get("/api/state").json["state"])
+        self.assertEqual([], self.agent.calls)
+
+    def test_chat_is_blocked_until_onboarding_is_complete(self):
+        self.register()
+        response = self.client.post("/api/chat", json={"message": "Help me plan this"})
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("complete Surveyor first", response.json["error"])
+        self.assertEqual([], self.agent.calls)
+
+    def test_legacy_completed_survey_does_not_raise_when_its_route_is_retried(self):
+        self.register()
+        store = self.app.extensions["cordia_store"]
+        for field in ("name", "role", "goal", "apps", "communication"):
+            store.save_survey_answer(1, field, "legacy answer")
+
+        response = self.client.post("/api/survey", json={"answer": "another answer"})
+
+        self.assertEqual(409, response.status_code)
 
     def test_unauthenticated_state_is_explicit(self):
         response = self.client.get("/api/state")
@@ -203,14 +343,14 @@ class ApplicationJourneyTests(unittest.TestCase):
     def test_register_survey_and_chat_are_one_continuous_workspace(self):
         self.register()
         state = self.client.get("/api/state").json
-        self.assertEqual("survey", state["state"])
-        self.assertEqual("name", state["survey"]["field"])
+        self.assertEqual("onboarding", state["state"])
+        self.assertNotIn("messages", state)
 
         self.complete_survey()
         state = self.client.get("/api/state").json
         self.assertEqual("workspace", state["state"])
-        self.assertIn("Google Drive, Slack", state["operator"])
-        self.assertGreaterEqual(len(state["messages"]), 10)
+        self.assertIn("# Cordia operator profile", state["operator"])
+        self.assertEqual([], state["messages"])
         self.assertEqual(
             {"provider": "Cordia", "model": "server-default", "source": "server"},
             state["agent_runtime"],
@@ -240,10 +380,13 @@ class ApplicationJourneyTests(unittest.TestCase):
 
         self.assertEqual(200, retried.status_code)
         self.assertEqual("implementation", retried.json["adjustment"]["axis"])
-        self.assertEqual(1, retried.json["adjustment"]["current"])
-        self.assertIn("Implementation preference: Implementation-first (1)", retried.json["operator"])
+        self.assertEqual(-1, retried.json["adjustment"]["previous"])
+        self.assertEqual(0, retried.json["adjustment"]["current"])
+        self.assertIn("Implementation preference: Balanced (0)", retried.json["operator"])
         retry_operator, retry_messages = self.agent.calls[-1]
-        self.assertIn("Implementation preference: Implementation-first (1)", retry_operator)
+        self.assertIn("Implementation preference: Balanced (0)", retry_operator)
+        self.assertIn("# Selected applications", retry_operator)
+        self.assertIn("# First workspace plan", retry_operator)
         self.assertEqual("Give me the plan", retry_messages[-1]["content"])
 
     def test_adjusting_unknown_response_is_rejected_without_calling_agent(self):
@@ -262,24 +405,20 @@ class ApplicationJourneyTests(unittest.TestCase):
     def test_only_agent_responses_are_eligible_for_operator_adjustment(self):
         self.register()
         self.complete_survey()
-        survey_messages = self.client.get("/api/state").json["messages"]
-        survey_response_id = next(
-            message["id"] for message in survey_messages if message["role"] == "assistant"
-        )
-
         rejected = self.client.post(
-            f"/api/responses/{survey_response_id}/adjust",
+            "/api/responses/999/adjust",
             json={"axis": "scope", "target": 1},
         )
         chat = self.client.post("/api/chat", json={"message": "Help me plan this"})
 
         self.assertEqual(404, rejected.status_code)
-        self.assertTrue(all(message["kind"] == "survey" for message in survey_messages))
         self.assertEqual("agent", chat.json["messages"][-1]["kind"])
 
     def test_agent_operation_saves_visible_artifact(self):
         self.register()
         self.complete_survey()
+        self.workspace.calls.clear()
+        self.workspace.store.save_connection(1, "google_drive", "verified")
 
         response = self.client.post("/api/chat", json={"message": "Show my recent files"})
 
@@ -296,11 +435,14 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.register()
         self.complete_survey()
         self.workspace.fail_tool = "connector_call"
+        self.workspace.store.save_connection(1, "google_drive", "verified")
 
         response = self.client.post("/api/chat", json={"message": "Show my recent files"})
 
-        self.assertEqual(502, response.status_code)
-        self.assertIn("provider operation failed", response.json["error"])
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json["ok"])
+        self.assertEqual("failed", response.json["run"]["status"])
+        self.assertIn("provider operation failed", response.json["assistant"])
         self.assertEqual([], response.json["artifacts"])
 
     def test_signout_ends_session(self):
@@ -310,6 +452,7 @@ class ApplicationJourneyTests(unittest.TestCase):
 
     def test_oauth_callback_resolves_state_and_finishes_connection(self):
         self.register()
+        self.complete_survey()
         store = self.app.extensions["cordia_store"]
         state = store.create_oauth_state(1, "google_drive")
 
@@ -367,6 +510,7 @@ class ApplicationJourneyTests(unittest.TestCase):
 
     def test_api_key_setup_reports_failed_initial_workspace_update_truthfully(self):
         self.register()
+        self.complete_survey()
         self.workspace.fail_tool = "connector_call"
 
         response = self.client.post(
@@ -403,6 +547,7 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual(401, unauthorized.status_code)
 
         self.register()
+        self.complete_survey()
         selected = self.client.post(
             "/api/connectors/select",
             json={"connector_id": "openai_api", "value": "gpt-5-mini"},
@@ -416,7 +561,6 @@ class ApplicationJourneyTests(unittest.TestCase):
         )
         self.assertNotIn("user-secret", selected.get_data(as_text=True))
 
-        self.complete_survey()
         response = self.client.post("/api/chat", json={"message": "Help me plan this"})
 
         self.assertEqual(200, response.status_code)

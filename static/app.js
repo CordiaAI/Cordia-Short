@@ -16,6 +16,12 @@ async function api(path, options = {}) {
   return payload;
 }
 
+const onboardingController = window.CordiaOnboarding.createController({
+  root: byId("onboarding"),
+  api,
+  onComplete: (state) => render(state),
+});
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
@@ -96,11 +102,11 @@ function renderSetupCard(card) {
       </form>`
     : card.action_url
       ? `<a href="${escapeHtml(card.action_url)}">Continue securely</a>`
-      : `<span class="status-pill">${escapeHtml(card.status)}</span>`;
+      : `<span class="status-pill">${escapeHtml(String(card.status || "Setup required").replaceAll("_", " "))}</span>`;
   container.innerHTML = `
-    <div class="assistant-mark">C</div>
     <div class="setup-copy"><small>CONNECTOR SETUP</small><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(card.message)}</p></div>
-    ${action}`;
+    ${action}
+    <button type="button" data-connector-cancel data-connector-id="${escapeHtml(card.connector_id)}">Cancel setup</button>`;
   container.hidden = false;
 }
 
@@ -145,7 +151,7 @@ function renderArtifacts(artifacts = []) {
   const visibleArtifacts = artifacts.filter((artifact) => artifact.surface !== "workspace_settings");
   container.innerHTML = visibleArtifacts.length
     ? visibleArtifacts.map((artifact) => renderArtifact(artifact)).join("")
-    : `<article class="artifact-window"><div class="artifact-title"><strong>Your first artifact will appear here</strong><span>READY</span></div><div class="artifact-body"><p style="padding:18px;color:var(--muted)">Ask Cordia to connect a service or organize part of your work.</p></div></article>`;
+    : `<article class="artifact-window"><div class="artifact-title"><strong>Your first artifact will appear here</strong></div><div class="artifact-body"><p class="artifact-empty">Ask Cordia to connect a service or organize part of your work.</p></div></article>`;
   renderWorkspaceSettings();
 }
 
@@ -157,6 +163,16 @@ function renderWorkspaceSettings() {
   byId("workspace-models").innerHTML = settingsArtifacts.length
     ? settingsArtifacts.map((artifact) => renderArtifact(artifact, { settings: true })).join("")
     : `<p class="settings-summary">Connect a model provider to manage it here.</p>`;
+}
+
+function renderSelectedApplications(applications = []) {
+  const container = byId("selected-applications");
+  const statuses = { requested: "Requested", planned: "Planned", setup_required: "Setup required", verified: "Verified", needs_attention: "Needs attention" };
+  container.hidden = !applications.length;
+  container.innerHTML = applications.length ? `
+    <h2 id="selected-applications-title">Selected applications</h2>
+    <p>Planning context. Setup required and planned applications are not connected.</p>
+    ${applications.map((application) => `<div class="selected-application-row"><strong>${escapeHtml(application.name)}</strong><span class="application-status">${escapeHtml(statuses[application.status] || "Requested")}</span></div>`).join("")}` : "";
 }
 
 function openLiveViewPermission(artifact) {
@@ -203,27 +219,32 @@ async function activateLiveView(connectorId) {
 function render(state, transient = {}) {
   currentState = state;
   const signedOut = state.state === "signed_out";
+  const isOnboarding = state.state === "onboarding";
+  document.querySelector(".topbar").hidden = isOnboarding;
   byId("auth-panel").hidden = !signedOut;
-  byId("app-shell").hidden = signedOut;
-  byId("account").hidden = signedOut;
+  byId("app-shell").hidden = signedOut || isOnboarding;
+  byId("account").hidden = signedOut || isOnboarding;
   const agentRuntime = state.agent_runtime;
   byId("status-pill").textContent = signedOut
     ? "Signed out"
-    : state.state === "survey"
+    : isOnboarding
       ? "Surveyor"
       : agentRuntime
         ? `Agent online · ${agentRuntime.provider} · ${agentRuntime.model}`
         : "Agent online";
-  if (signedOut) return;
+  if (signedOut) { onboardingController.hide(); return; }
+  if (isOnboarding) {
+    onboardingController.show(state.onboarding).catch((error) => { byId("onboarding-error").textContent = error.message; });
+    return;
+  }
+  onboardingController.hide();
 
   renderMessages(state.messages, state.state === "workspace");
   renderArtifacts(state.artifacts);
+  renderSelectedApplications(state.selected_applications);
   renderSetupCard(transient.setup_card || state.setup_card || null);
   byId("operator").textContent = state.operator || "Cordia is still learning how you work.";
-  const survey = state.survey;
-  byId("survey-prompt").hidden = !survey;
-  byId("survey-prompt").textContent = survey ? survey.question : "";
-  byId("message-input").placeholder = survey ? "Answer Surveyor…" : "Message Cordia…";
+  byId("message-input").placeholder = "Message Cordia…";
   const nameMatch = (state.operator || "").match(/## Name\s+([^#\n][^\n]*)/);
   byId("workspace-title").textContent = nameMatch ? `${nameMatch[1]}'s workspace` : "Your workspace";
   byId("account-initial").textContent = nameMatch ? nameMatch[1].trim().charAt(0).toUpperCase() : "∞";
@@ -260,7 +281,13 @@ async function refresh() {
 document.querySelectorAll("[data-auth-mode]").forEach((button) => {
   button.addEventListener("click", () => {
     authMode = button.dataset.authMode;
-    document.querySelectorAll("[data-auth-mode]").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll("[data-auth-mode]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    byId("auth-title").textContent = authMode === "register" ? "Create account" : "Sign in";
+    byId("password").autocomplete = authMode === "register" ? "new-password" : "current-password";
+    byId("password-help").hidden = authMode !== "register";
     byId("auth-submit").textContent = authMode === "register" ? "Create workspace" : "Sign in";
     byId("auth-error").textContent = "";
   });
@@ -295,11 +322,10 @@ composer.addEventListener("submit", async (event) => {
   if (!message || input.disabled) return;
   input.value = "";
   input.disabled = true;
+  byId("notice").hidden = true;
   renderPendingMessage(message);
   try {
-    const path = currentState.state === "survey" ? "/api/survey" : "/api/chat";
-    const body = currentState.state === "survey" ? { answer: message } : { message };
-    const state = await api(path, { method: "POST", body: JSON.stringify(body) });
+    const state = await api("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
     render(state, state);
   } catch (error) {
     render(error.payload || currentState);
@@ -345,6 +371,22 @@ byId("messages").addEventListener("click", async (event) => {
     errorNotice.textContent = error.message;
     errorNotice.hidden = false;
   }
+});
+
+byId("setup-card").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-connector-cancel]");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    render(await api("/api/connectors/cancel", {
+      method: "POST", body: JSON.stringify({ connector_id: button.dataset.connectorId }),
+    }));
+    byId("notice").textContent = "Setup cancelled. You can ask Cordia to connect it again whenever you’re ready.";
+  } catch (error) {
+    button.disabled = false;
+    byId("notice").textContent = error.message;
+  }
+  byId("notice").hidden = false;
 });
 
 byId("setup-card").addEventListener("submit", async (event) => {

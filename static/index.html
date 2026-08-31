@@ -6,11 +6,14 @@
   <meta name="description" content="Cordia is one adaptive workspace for your agent, connectors, artifacts, and live work.">
   <title>Cordia</title>
   <link rel="icon" href="/static/assets/cordia-logo-header.webp">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Cordia home"><span class="mark">∞</span> cordia</a>
+    <a class="brand" href="/" aria-label="Cordia home"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24"></a>
     <span class="workspace-label">My Workspace</span>
     <button id="back-to-cordia" class="back-button" type="button" disabled aria-disabled="true" title="Cordia home is coming soon">← Back to Cordia</button>
     <div class="top-actions">
@@ -38,10 +41,11 @@
         <div><strong>Cordia Agent</strong><small>Shape the work. Keep the source of truth.</small></div>
       </div>
       <div id="messages" class="messages" aria-live="polite"></div>
-      <div id="survey-prompt" class="survey-prompt" hidden></div>
       <form id="composer" class="composer">
-        <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?"></textarea>
+        <label class="sr-only" for="message-input">Message Cordia</label>
+        <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?" aria-describedby="composer-help"></textarea>
         <button type="submit">Send</button>
+        <small id="composer-help" class="composer-help">Enter to send · Shift + Enter for a new line</small>
       </form>
     </aside>
 
@@ -51,30 +55,53 @@
       </div>
       <div id="notice" class="notice" hidden></div>
       <section id="setup-card" class="setup-card" hidden></section>
+      <section id="selected-applications" class="selected-applications" aria-labelledby="selected-applications-title" hidden></section>
       <section id="artifact-grid" class="artifact-grid" aria-live="polite"></section>
       <section class="memory-card">
         <div><small>OPERATOR PROFILE</small><h2>How Cordia understands your communication</h2></div>
-        <pre id="operator"></pre>
+        <details><summary>View saved profile</summary><pre id="operator"></pre></details>
       </section>
     </section>
   </main>
 
+  <section id="onboarding" class="onboarding" hidden aria-labelledby="onboarding-title">
+    <header class="onboarding-brand"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia"></header>
+    <main class="onboarding-panel">
+      <p id="onboarding-progress" class="onboarding-progress" aria-live="polite"></p>
+      <h1 id="onboarding-title" tabindex="-1"></h1>
+      <p id="onboarding-instructions" class="onboarding-instructions"></p>
+      <form id="onboarding-form">
+        <div id="onboarding-fields"></div>
+        <p id="onboarding-error" role="alert" aria-live="assertive"></p>
+        <div class="onboarding-actions" role="group" aria-label="Onboarding navigation">
+          <button id="onboarding-back" class="quiet-button" type="button">BACK</button>
+          <button id="onboarding-continue" class="primary-button" type="submit">CONTINUE</button>
+        </div>
+      </form>
+    </main>
+  </section>
+
   <section id="auth-panel" class="auth-panel">
+    <div class="auth-background" aria-hidden="true"></div>
+    <div class="auth-intro">
+      <img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24">
+      <h1>I see humans,<br>but no <em>humanity.</em></h1>
+      <p>AI adoption fails on <strong>intent</strong>, not capability.<br>Cordia measures that.</p>
+    </div>
     <div class="auth-card">
-      <span class="mark large">∞</span>
-      <small>CORDIA SHORT</small>
-      <h1>One workspace that learns how you work.</h1>
-      <p>Begin with Surveyor. Continue with the same Cordia Agent.</p>
-      <div class="auth-tabs">
-        <button type="button" data-auth-mode="register" class="active">Create account</button>
-        <button type="button" data-auth-mode="signin">Sign in</button>
+      <h2 id="auth-title">Create account</h2>
+      <div class="auth-tabs" role="group" aria-label="Account access">
+        <button type="button" data-auth-mode="signin" aria-pressed="false">Sign in</button>
+        <button type="button" data-auth-mode="register" class="active" aria-pressed="true">Create account</button>
       </div>
       <form id="auth-form">
-        <label>Email<input id="email" type="email" autocomplete="email" required></label>
-        <label>Password<input id="password" type="password" minlength="12" autocomplete="current-password" required></label>
+        <label>Email<input id="email" type="email" placeholder="you@studio.com" autocomplete="email" required></label>
+        <label>Password<input id="password" type="password" minlength="12" autocomplete="new-password" aria-describedby="password-help" required></label>
+        <small id="password-help">Use at least 12 characters.</small>
         <button id="auth-submit" type="submit">Create workspace</button>
       </form>
       <p id="auth-error" class="error" aria-live="polite"></p>
+      <p class="auth-foot">Your preferences. Your tools. One workspace.</p>
     </div>
   </section>
 
@@ -106,6 +133,7 @@
     </div>
   </dialog>
 
+  <script src="/static/onboarding.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

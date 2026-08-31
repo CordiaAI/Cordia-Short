@@ -1,27 +1,24 @@
 from __future__ import annotations
 
 import os
+from functools import wraps
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 
-from cordia.agent import Agent, AgentUnavailable, InvalidAgentAction
+from cordia.agent import Agent, AgentBusy, AgentUnavailable, InvalidAgentAction
+from cordia.agent_runs import AgentRuns
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
-from cordia.connectors import resolve_connector
+from cordia.connectors import CONNECTORS, resolve_connector
+from cordia.onboarding import normalize_applications
 from cordia.store import SURVEY_FIELDS, Store
+from cordia.survey import STAGE_ORDER, public_stage_schema
 from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
 
 ROOT = Path(__file__).resolve().parent
 SESSION_COOKIE = "cordia_session"
-SURVEY_QUESTIONS = {
-    "name": "What should I call you?",
-    "role": "What kind of work or role should this workspace support?",
-    "goal": "What is the first meaningful outcome you want Cordia to help with?",
-    "apps": "Which apps or services are already part of that work?",
-    "communication": "How should I explain things to you: big picture first, detail first, visual, or another way?",
-}
 ADJUSTMENT_LABELS = {
     ("context", -1): "Use only what I said",
     ("context", 1): "Use more context",
@@ -88,21 +85,59 @@ def create_app(
             raise PermissionError("sign in required")
         return user_id
 
-    def next_survey(user_id: int) -> dict | None:
-        answers = store.survey_answers(user_id)
-        for field in SURVEY_FIELDS:
-            if not answers.get(field):
-                return {"field": field, "question": SURVEY_QUESTIONS[field]}
-        return None
+    def onboarding_payload(user_id: int) -> dict:
+        onboarding = store.onboarding_state(user_id)
+        onboarding["stage_schemas"] = {
+            stage: public_stage_schema(stage, onboarding["answers"])
+            for stage in STAGE_ORDER
+        }
+        onboarding["application_catalog"] = [
+            {"id": connector["id"], "name": connector["name"]}
+            for connector in CONNECTORS.values()
+        ]
+        discovery = onboarding["answers"].get("workspace_discovery", {})
+        if discovery:
+            statuses = {
+                connector_id: status
+                for connector_id in CONNECTORS
+                if (status := store.connection_status(user_id, connector_id)) is not None
+            }
+            normalized = normalize_applications(
+                discovery.get("applications", []), CONNECTORS, statuses
+            )
+            selected = [
+                {
+                    field: application[field]
+                    for field in (
+                        "application_id",
+                        "name",
+                        "already_uses",
+                        "wants_added",
+                        "current_activities",
+                        "desired_activities",
+                        "inputs_outputs",
+                        "control_level",
+                        "registry_id",
+                        "status",
+                    )
+                }
+                for application in normalized
+            ]
+            onboarding["selected_applications"] = selected
+            if onboarding.get("review"):
+                onboarding["review"]["selected_applications"] = selected
+        return onboarding
 
     def state_payload(user_id: int | None = None) -> dict:
         user_id = current_user() if user_id is None else user_id
         if not user_id:
             return {"state": "signed_out"}
-        survey = next_survey(user_id)
+        onboarding = onboarding_payload(user_id)
+        if not store.survey_complete(user_id):
+            return {"state": "onboarding", "onboarding": onboarding}
         return {
-            "state": "survey" if survey else "workspace",
-            "survey": survey,
+            "state": "workspace",
+            "selected_applications": onboarding.get("selected_applications", []),
             "operator": store.operator_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": [
@@ -110,14 +145,65 @@ def create_app(
                 for artifact in store.artifacts(user_id)
             ],
             "setup_card": store.setup_card(user_id),
-            "agent_runtime": runtime.agent_runtime(user_id) or default_agent_runtime,
+            "agent_runtime": agent_runtime_payload(user_id),
+            "agent_run": agent_runs.latest(user_id),
         }
 
+    def agent_runtime_payload(user_id: int):
+        selected = runtime.agent_runtime(user_id)
+        selected_id = store.connection_setting(user_id, "__runtime__", "agent_model")
+        if not selected and not selected_id:
+            return default_agent_runtime
+        try:
+            available = runtime.agent_provider(user_id) is not None
+        except RuntimeError:
+            available = False
+        if available:
+            return selected
+        connector = CONNECTORS.get(selected_id, {})
+        return {"provider": (selected or {}).get("provider", connector.get("name", "Selected provider")) + " (unavailable)",
+                "model": (selected or {}).get("model") or store.connection_setting(user_id, selected_id, "model") or "unavailable",
+                "source": "connector"}
+
     def active_agent(user_id: int):
-        provider = runtime.agent_provider(user_id)
+        try:
+            provider = runtime.agent_provider(user_id)
+        except RuntimeError as exc:
+            raise AgentUnavailable("Selected model credentials are unavailable; reconnect the provider") from exc
         if not provider:
+            if (runtime.agent_runtime(user_id)
+                    or store.connection_setting(user_id, "__runtime__", "agent_model")):
+                raise AgentUnavailable("Selected model credentials are unavailable; reconnect the provider")
             return cordia_agent
-        return make_agent(provider["credential"], provider["model"])
+        selected = make_agent(provider["credential"], provider["model"])
+        selected.source = "connector"
+        return selected
+
+    agent_runs = AgentRuns(store, workspace, active_agent)
+    app.extensions["agent_runs"] = agent_runs
+
+    def exclusive_workspace_action(handler):
+        @wraps(handler)
+        def execute(*args, **kwargs):
+            user_id = require_user()
+            with agent_runs.lock(user_id):
+                pending = agent_runs.latest(user_id)
+                if pending and pending["status"] == "waiting_connection":
+                    raise AgentBusy("Finish or cancel the pending authorization first")
+                return handler(*args, **kwargs)
+        return execute
+
+    def prepare_selected_setup(user_id: int):
+        pending = agent_runs.latest(user_id)
+        if store.setup_card(user_id) or (pending and pending["status"] == "waiting_connection"):
+            return
+        for application in onboarding_payload(user_id).get("selected_applications", []):
+            connector_id = application.get("registry_id")
+            if (application.get("wants_added") and connector_id in CONNECTORS
+                    and store.connection_status(user_id, connector_id) != "verified"):
+                card = workspace.call(user_id, "connector_start", {"connector_id": connector_id})
+                store.save_setup_card(user_id, card)
+                return
 
     def create_operation_artifact(
         user_id: int, connector_id: str, operation_id: str
@@ -133,23 +219,17 @@ def create_app(
             {"payload": operation["artifact"]},
         )["artifact"]
 
-    def execute_workspace_action(user_id: int, action: dict) -> tuple[dict | None, dict | None]:
-        setup_card = None
-        artifact = None
-        if action["action"] == "propose_connector":
-            setup_card = workspace.call(
-                user_id,
-                "connector_start",
-                {"connector_id": action["connector_id"]},
-            )
-            store.save_setup_card(user_id, setup_card)
-        elif action["action"] == "run_operation":
-            artifact = create_operation_artifact(
-                user_id, action["connector_id"], action["operation_id"]
-            )
-        return setup_card, artifact
-
     def continue_after_connection(user_id: int, connector_id: str) -> dict:
+        try:
+            resumed = agent_runs.resume(user_id, connector_id, locked=True)
+        except (AgentUnavailable, InvalidAgentAction, WorkspaceMCPError):
+            store.add_message(user_id, "assistant", "- The service is verified, but Cordia could not finish your original request. Please submit it again.")
+            return {"status": "failed", "artifact": None}
+        if resumed is not None:
+            return {"status": resumed["run"]["status"], **resumed}
+        pending = agent_runs.latest(user_id)
+        if pending and pending["status"] == "waiting_connection":
+            return {"status": "waiting_connection", "artifact": None}
         connector = resolve_connector(connector_id)
         if not connector:
             return {"status": "not_configured", "artifact": None}
@@ -183,6 +263,10 @@ def create_app(
     @app.errorhandler(PermissionError)
     def permission_error(exc):
         return jsonify({"ok": False, "error": str(exc)}), 401
+
+    @app.errorhandler(AgentBusy)
+    def agent_busy(exc):
+        return jsonify({"ok": False, "error": str(exc), **state_payload()}), 409
 
     @app.get("/")
     def index():
@@ -244,22 +328,50 @@ def create_app(
     @app.post("/api/survey")
     def survey():
         user_id = require_user()
-        current = next_survey(user_id)
-        if not current:
+        answers = store.survey_answers(user_id)
+        if store.onboarding_stages(user_id) or not any(answers.get(field) for field in SURVEY_FIELDS):
+            return jsonify({"error": "Continue in the new Surveyor"}), 410
+        if store.legacy_survey_complete(user_id):
             return jsonify({"ok": False, "error": "Surveyor is already complete"}), 409
+        current = next(field for field in SURVEY_FIELDS if not answers.get(field))
         answer = str((request.get_json(silent=True) or {}).get("answer", "")).strip()
         if not answer:
             return jsonify({"ok": False, "error": "answer is required"}), 400
         store.add_message(user_id, "user", answer, kind="survey")
-        store.save_survey_answer(user_id, current["field"], answer)
-        upcoming = next_survey(user_id)
-        assistant_message = (
-            upcoming["question"]
-            if upcoming
-            else "I saved that understanding. We can keep talking here and build your workspace together."
-        )
-        store.add_message(user_id, "assistant", assistant_message, kind="survey")
-        return jsonify({"ok": True, "assistant": assistant_message, **state_payload(user_id)})
+        store.save_survey_answer(user_id, current, answer)
+        return jsonify({"ok": True, **state_payload(user_id)})
+
+    @app.get("/api/onboarding")
+    def onboarding_state():
+        user_id = require_user()
+        return jsonify({"ok": True, "onboarding": onboarding_payload(user_id)})
+
+    @app.put("/api/onboarding/<stage>")
+    def onboarding_stage(stage):
+        user_id = require_user()
+        if store.survey_complete(user_id):
+            return jsonify({"ok": False, "error": "Surveyor is already complete"}), 409
+        try:
+            store.save_onboarding_stage(user_id, stage, request.get_json(silent=True) or {})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "onboarding": onboarding_payload(user_id)})
+
+    @app.post("/api/onboarding/complete")
+    def onboarding_complete():
+        user_id = require_user()
+        try:
+            with agent_runs.lock(user_id):
+                store.complete_onboarding(user_id, CONNECTORS)
+                prepare_selected_setup(user_id)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc), "onboarding": onboarding_payload(user_id)}), 409
+        except OSError:
+            app.logger.exception("onboarding workspace installation failed")
+            return jsonify({"ok": False, "error": "Cordia could not safely create your workspace. Your survey is saved."}), 500
+        except WorkspaceMCPError:
+            return jsonify({"ok": False, "error": "Workspace created, but app setup could not be prepared. Ask Cordia to connect it again.", **state_payload(user_id)}), 502
+        return jsonify({"ok": True, **state_payload(user_id)})
 
     @app.post("/api/chat")
     def chat():
@@ -269,19 +381,12 @@ def create_app(
         message = str((request.get_json(silent=True) or {}).get("message", "")).strip()
         if not message:
             return jsonify({"ok": False, "error": "message is required"}), 400
-        store.add_message(user_id, "user", message)
         try:
-            action = active_agent(user_id).respond(
-                store.operator_markdown(user_id), store.messages(user_id)
-            )
-            setup_card, artifact = execute_workspace_action(user_id, action)
-            store.add_message(user_id, "assistant", action["message"], kind="agent")
+            result = agent_runs.start(user_id, message)
             return jsonify(
                 {
-                    "ok": True,
-                    "assistant": action["message"],
-                    "setup_card": setup_card,
-                    "artifact": artifact,
+                    "ok": result["run"]["status"] not in {"failed", "needs_configuration"},
+                    **result,
                     **state_payload(user_id),
                 }
             )
@@ -308,20 +413,14 @@ def create_app(
         if not label:
             return jsonify({"ok": False, "error": "Choose one available response adjustment"}), 400
         try:
-            retry_messages = store.messages_before_response(user_id, response_id)
-            adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
-            action = active_agent(user_id).respond(
-                store.operator_markdown(user_id), retry_messages
-            )
-            setup_card, artifact = execute_workspace_action(user_id, action)
-            store.add_message(user_id, "assistant", action["message"], kind="agent")
+            with agent_runs.lock(user_id):
+                adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
+                result = agent_runs.revise(user_id, response_id, locked=True)
             return jsonify(
                 {
                     "ok": True,
-                    "assistant": action["message"],
+                    **result,
                     "adjustment": adjustment,
-                    "setup_card": setup_card,
-                    "artifact": artifact,
                     **state_payload(user_id),
                 }
             )
@@ -340,24 +439,25 @@ def create_app(
     @app.get("/api/connectors/oauth/callback")
     def oauth_callback():
         user_id = require_user()
-        state = request.args.get("state", "")
-        connector_id = store.oauth_connector_for_state(user_id, state)
-        if not connector_id:
-            return redirect("/?error=invalid_oauth_state")
-        if request.args.get("error"):
-            store.consume_oauth_state(user_id, connector_id, state)
-            store.clear_setup_card(user_id)
-            return redirect("/?error=oauth_denied")
-        try:
-            runtime.finish_connection(
-                user_id,
-                connector_id,
-                {"state": state, "code": request.args.get("code", "")},
-            )
-        except ConnectorError:
-            return redirect("/?error=connector_verification_failed")
-        store.clear_setup_card(user_id)
-        workspace_update = continue_after_connection(user_id, connector_id)
+        with agent_runs.lock(user_id):
+            state = request.args.get("state", "")
+            connector_id = store.oauth_connector_for_state(user_id, state)
+            if not connector_id:
+                return redirect("/?error=invalid_oauth_state")
+            if request.args.get("error"):
+                store.consume_oauth_state(user_id, connector_id, state)
+                agent_runs.deny(user_id, connector_id, locked=True)
+                if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
+                    store.clear_setup_card(user_id)
+                return redirect("/?error=oauth_denied")
+            try:
+                runtime.finish_connection(user_id, connector_id, {"state": state, "code": request.args.get("code", "")})
+            except ConnectorError:
+                return redirect("/?error=connector_verification_failed")
+            if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
+                store.clear_setup_card(user_id)
+            workspace_update = continue_after_connection(user_id, connector_id)
+            prepare_selected_setup(user_id)
         query = urlencode(
             {"connected": connector_id, "workspace_update": workspace_update["status"]}
         )
@@ -371,12 +471,15 @@ def create_app(
         credentials = payload.get("credentials")
         if not connector_id or not isinstance(credentials, dict):
             return jsonify({"ok": False, "error": "connector and credentials are required"}), 400
-        try:
-            connection = runtime.finish_connection(user_id, connector_id, credentials)
-        except ConnectorError as exc:
-            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
-        store.clear_setup_card(user_id)
-        workspace_update = continue_after_connection(user_id, connector_id)
+        with agent_runs.lock(user_id):
+            try:
+                connection = runtime.finish_connection(user_id, connector_id, credentials)
+            except ConnectorError as exc:
+                return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
+            if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
+                store.clear_setup_card(user_id)
+            workspace_update = continue_after_connection(user_id, connector_id)
+            prepare_selected_setup(user_id)
         return jsonify(
             {
                 "ok": True,
@@ -387,7 +490,23 @@ def create_app(
             }
         )
 
+    @app.post("/api/connectors/cancel")
+    def connector_cancel():
+        user_id = require_user()
+        connector_id = str((request.get_json(silent=True) or {}).get("connector_id", ""))
+        with agent_runs.lock(user_id):
+            card = store.setup_card(user_id) or {}
+            if card.get("connector_id") == connector_id:
+                state = parse_qs(urlparse(card.get("action_url", "")).query).get("state", [""])[0]
+                if state:
+                    store.consume_oauth_state(user_id, connector_id, state)
+            agent_runs.deny(user_id, connector_id, locked=True)
+            if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
+                store.clear_setup_card(user_id)
+        return jsonify({"ok": True, **state_payload(user_id)})
+
     @app.post("/api/connectors/select")
+    @exclusive_workspace_action
     def connector_select():
         user_id = require_user()
         payload = request.get_json(silent=True) or {}
@@ -402,6 +521,7 @@ def create_app(
         return jsonify({"ok": True, "selection": selection, **state_payload(user_id)})
 
     @app.post("/api/connectors/live-view")
+    @exclusive_workspace_action
     def connector_live_view():
         user_id = require_user()
         payload = request.get_json(silent=True) or {}
