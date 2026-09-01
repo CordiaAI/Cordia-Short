@@ -250,7 +250,58 @@ class AgentRuns:
             artifact = self.workspace.call(user_id, "artifact_create", {"payload": result["artifact"]})["artifact"]
             return {"ok": True, "artifact": artifact}
 
-        return [connectors_search, connector_status, connect_service, run_operation]
+        @tool
+        def mcp_registry_search(query: str) -> dict:
+            """Search the official MCP Registry for an app or service."""
+            return {"servers": self.workspace.search_registry(query)}
+
+        @tool
+        def mcp_server_install(server_id: str) -> dict:
+            """Install a selected remote MCP server and discover its real tools."""
+            installed = self.workspace.install_registry_server(user_id, server_id)
+            if installed.get("headers"):
+                card = self.workspace.server_setup_card(user_id, server_id)
+                self.store.save_setup_card(user_id, card)
+                connector_id = f"mcp:{server_id}"
+                interrupt(
+                    {"connector_id": connector_id, "status": "authorization_required"}
+                )
+                if self.store.connection_status(user_id, connector_id) != "verified":
+                    raise InvalidAgentAction("MCP server is not verified")
+                verified = self.store.mcp_server(user_id, server_id)
+                return {
+                    "ok": True,
+                    "server": verified,
+                    "tools": verified.get("tools", []),
+                }
+            tools = self.workspace.discover_server(user_id, server_id)
+            return {"ok": True, "server": installed, "tools": tools}
+
+        @tool
+        def mcp_tool_call(server_id: str, tool_name: str, arguments: dict) -> dict:
+            """Call one discovered, explicitly read-only MCP tool and save its artifact."""
+            server = self.store.mcp_server(user_id, server_id)
+            if not server or server.get("status") != "verified":
+                raise InvalidAgentAction("MCP server is not verified")
+            declared = next(
+                (item for item in server.get("tools", []) if item.get("name") == tool_name),
+                None,
+            )
+            if not declared:
+                raise InvalidAgentAction("MCP tool is not discovered")
+            if declared.get("annotations", {}).get("readOnlyHint") is not True:
+                raise InvalidAgentAction("MCP tool requires consequential-action approval")
+            return self.workspace.call_server_tool(user_id, server_id, tool_name, arguments)
+
+        return [
+            connectors_search,
+            connector_status,
+            connect_service,
+            run_operation,
+            mcp_registry_search,
+            mcp_server_install,
+            mcp_tool_call,
+        ]
 
     @staticmethod
     def _safe_result(value):

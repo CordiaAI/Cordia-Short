@@ -114,6 +114,11 @@ class RecordingWorkspaceClient:
         self.calls = []
         self.store = None
         self.fail_tool = None
+        self.mcp_setups = []
+
+    def finish_server_setup(self, user_id, server_id, credentials):
+        self.mcp_setups.append((user_id, server_id, credentials))
+        return {"server_id": server_id, "status": "verified", "tools": []}
 
     def call(self, user_id, tool_name, arguments):
         self.calls.append((user_id, tool_name, arguments))
@@ -507,6 +512,25 @@ class ApplicationJourneyTests(unittest.TestCase):
         self.assertEqual("verified", response.json["connection"]["status"])
         self.assertEqual("user-secret", self.runtime.finished[-1][2]["api_key"])
         self.assertNotIn("user-secret", response.get_data(as_text=True))
+
+    def test_mcp_header_setup_uses_the_generic_workspace_client_path(self):
+        self.register()
+
+        response = self.client.post(
+            "/api/connectors/setup",
+            json={
+                "connector_id": "mcp:com.example/work",
+                "credentials": {"X-API-Key": "provider-secret"},
+            },
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("verified", response.json["connection"]["status"])
+        self.assertEqual(
+            [(1, "com.example/work", {"X-API-Key": "provider-secret"})],
+            self.workspace.mcp_setups,
+        )
+        self.assertNotIn("provider-secret", response.get_data(as_text=True))
 
     def test_api_key_setup_reports_failed_initial_workspace_update_truthfully(self):
         self.register()

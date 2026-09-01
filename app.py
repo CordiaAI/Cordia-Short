@@ -472,6 +472,27 @@ def create_app(
         if not connector_id or not isinstance(credentials, dict):
             return jsonify({"ok": False, "error": "connector and credentials are required"}), 400
         with agent_runs.lock(user_id):
+            if connector_id.startswith("mcp:"):
+                server_id = connector_id[4:]
+                try:
+                    connection = workspace.finish_server_setup(
+                        user_id, server_id, credentials
+                    )
+                except (ValueError, WorkspaceMCPError) as exc:
+                    return jsonify(
+                        {"ok": False, "error": str(exc), **state_payload(user_id)}
+                    ), 422
+                if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
+                    store.clear_setup_card(user_id)
+                workspace_update = continue_after_connection(user_id, connector_id)
+                return jsonify(
+                    {
+                        "ok": True,
+                        "connection": connection,
+                        "workspace_update": workspace_update,
+                        **state_payload(user_id),
+                    }
+                )
             try:
                 connection = runtime.finish_connection(user_id, connector_id, credentials)
             except ConnectorError as exc:

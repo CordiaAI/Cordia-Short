@@ -142,6 +142,14 @@ class Store:
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mcp_servers (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    server_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, server_id)
+                );
                 CREATE TABLE IF NOT EXISTS operator_profiles (
                     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                     context INTEGER NOT NULL DEFAULT 0 CHECK (context IN (-1, 0, 1)),
@@ -956,3 +964,62 @@ class Store:
     def clear_setup_card(self, user_id: int) -> None:
         with self._connection() as connection:
             connection.execute("DELETE FROM setup_cards WHERE user_id = ?", (user_id,))
+
+    def save_mcp_server(
+        self, user_id: int, server_id: str, payload: dict, status: str
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO mcp_servers(user_id, server_id, payload, status, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, server_id) DO UPDATE SET
+                    payload = excluded.payload,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    server_id,
+                    json.dumps(payload),
+                    status,
+                    self._now().isoformat(),
+                ),
+            )
+
+    def mcp_server(self, user_id: int, server_id: str) -> dict | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT server_id, payload, status, updated_at FROM mcp_servers
+                WHERE user_id = ? AND server_id = ?
+                """,
+                (user_id, server_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            **json.loads(row["payload"]),
+            "server_id": row["server_id"],
+            "status": row["status"],
+            "updated_at": row["updated_at"],
+        }
+
+    def mcp_servers(self, user_id: int) -> list[dict]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT server_id, payload, status, updated_at FROM mcp_servers
+                WHERE user_id = ? ORDER BY server_id
+                """,
+                (user_id,),
+            ).fetchall()
+        return [
+            {
+                **json.loads(row["payload"]),
+                "server_id": row["server_id"],
+                "status": row["status"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]

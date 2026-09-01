@@ -68,6 +68,83 @@ class AgentRunTests(unittest.TestCase):
         self.assertEqual(1, len(self.store.artifacts(self.user)))
         self.assertEqual(2, len(self.store.artifacts(self.user)[0]["rows"]))
 
+    def test_agent_has_provider_neutral_mcp_discovery_install_and_call_tools(self):
+        service, _ = self.service([AIMessage(content="unused")])
+
+        names = {item.name for item in service._tools(self.user)}
+
+        self.assertTrue(
+            {"mcp_registry_search", "mcp_server_install", "mcp_tool_call"}.issubset(names)
+        )
+
+    def test_mcp_credential_setup_pauses_and_resumes_the_original_agent_run(self):
+        class MCPWorkspace:
+            def __init__(self, store):
+                self.store = store
+
+            def install_registry_server(self, user_id, server_id):
+                self.store.save_mcp_server(
+                    user_id,
+                    server_id,
+                    {
+                        "title": "Example Work",
+                        "version": "1.0.0",
+                        "transport": "streamable-http",
+                        "endpoint": "https://example.com/mcp",
+                        "headers": [
+                            {
+                                "name": "X-API-Key",
+                                "description": "API key",
+                                "is_required": True,
+                                "is_secret": True,
+                            }
+                        ],
+                    },
+                    "installed",
+                )
+                return self.store.mcp_server(user_id, server_id)
+
+            def server_setup_card(self, user_id, server_id):
+                return {
+                    "type": "credential_form",
+                    "connector_id": f"mcp:{server_id}",
+                    "title": "Connect Example Work",
+                    "message": "Authorize securely.",
+                    "fields": [{"name": "X-API-Key", "type": "password"}],
+                    "submit_url": "/api/connectors/setup",
+                }
+
+        model = ScriptedModel(
+            replies=[
+                call("mcp_server_install", server_id="com.example/work"),
+                AIMessage(content="- Example Work is connected."),
+            ]
+        )
+        agent = agent_module.Agent("fixture-model-key", chat_model=model)
+        service = AgentRuns(
+            self.store, MCPWorkspace(self.store), lambda _user: agent
+        )
+
+        paused = service.start(self.user, "Connect Example Work")
+        self.assertEqual("waiting_connection", paused["run"]["status"])
+        self.assertEqual("mcp:com.example/work", paused["setup_card"]["connector_id"])
+        self.store.save_connection(
+            self.user, "mcp:com.example/work", "verified", {"headers": {}}
+        )
+        saved = self.store.mcp_server(self.user, "com.example/work")
+        self.store.save_mcp_server(
+            self.user,
+            "com.example/work",
+            {key: saved[key] for key in ("title", "version", "transport", "endpoint", "headers")}
+            | {"tools": []},
+            "verified",
+        )
+
+        completed = service.resume(
+            self.user, "mcp:com.example/work", run_id=paused["run"]["id"]
+        )
+        self.assertEqual("completed", completed["run"]["status"])
+
     def test_pause_survives_reconstruction_and_verified_resume_keeps_original_task(self):
         service, model = self.service([
             call("run_operation", connector_id="openai_api", operation_id="list_models"),
