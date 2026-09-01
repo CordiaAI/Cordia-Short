@@ -1,5 +1,7 @@
 # Private Workspace MCP and Google OAuth Design
 
+> **HISTORICAL DESIGN RECORD.** This describes the existing embedded, user-bound MCP slice—not a complete persistent or universal MCP connector system. Current work must start from `docs/CURRENT_BUILD_TRUTH.md` and an approved change contract.
+
 ## Goal
 
 Cordia remains one continuous workspace while its connector, memory, and artifact capabilities are exposed through one private MCP server boundary. Google Drive is the first real provider proof. Cordia performs every setup step it can and asks the user only for unavoidable authorization.

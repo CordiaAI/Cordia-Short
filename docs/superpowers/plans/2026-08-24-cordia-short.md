@@ -1,5 +1,7 @@
 # Cordia Short Implementation Plan
 
+> **HISTORICAL — NOT AN ACTIVE IMPLEMENTATION AUTHORITY.** Read `AGENTS.md`, `docs/CURRENT_BUILD_TRUTH.md`, and `docs/NEXT_CHANGE_CONTRACT.md` before using this document. Completed or unchecked items here do not establish current capability.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the smallest honest Cordia journey from sign-in and Surveyor memory through a real Cordia Agent, verified Google Drive connection, real operation, and visible artifact.

@@ -1,5 +1,7 @@
 # Private Workspace MCP and Google OAuth Implementation Plan
 
+> **HISTORICAL — NOT AN ACTIVE IMPLEMENTATION AUTHORITY.** This records the embedded MCP slice at the time it was planned. It does not authorize a universal connector architecture or override `docs/CURRENT_BUILD_TRUTH.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Route Cordia's existing connector and artifact behavior through a private, user-bound MCP server and complete the refreshable Google OAuth path.

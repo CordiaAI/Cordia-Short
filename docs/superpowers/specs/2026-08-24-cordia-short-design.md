@@ -1,5 +1,7 @@
 # Cordia Short Design
 
+> **HISTORICAL DESIGN RECORD.** It does not override `AGENTS.md`, `docs/CURRENT_BUILD_TRUTH.md`, official current documentation, or an approved `docs/NEXT_CHANGE_CONTRACT.md`.
+
 ## Product acceptance
 
 A new user can register, complete a short conversational Surveyor, continue in the same Cordia Agent conversation, request Google Drive, complete real OAuth, ask the agent to use Drive, and see the real result in an artifact window.
