@@ -6,14 +6,24 @@ Surveyor is the workspace specification, not a prelude to another setup wizard. 
 
 The workspace is a Cordia-owned artifact dashboard. Connector windows are readable projections of provider data, not embedded copies of provider applications. Buttons in those windows invoke reusable Cordia actions through the same agent and connector runtime.
 
+## Markdown build contract
+
+The build is driven by three Markdown documents, not a second planner or workspace index:
+
+- `surveyor.md` is the source document for the user's Surveyor results, working context, communication preferences, and evidence.
+- `connectors.md` is the source document for selected applications, the user's current and desired work in each application, control level, authentication type, and truthful runtime status.
+- `fde.md` is the compiled, standalone execution plan. It molds the useful context from both source documents into step-by-step Forward Deployed Engineer instructions for building this user's workspace.
+
+`fde.md` is the only Markdown document supplied as the workspace-build assignment. It tells Cordia what to build, what sources to use, how to work with the user, what it may do automatically, and exactly where it must pause. The source documents remain readable and independently recompilable; they are not additional agent loops.
+
 ## Scope and delivery order
 
 The beta is delivered as short vertical sprints:
 
-1. Replace raw provider JSON with a small, provider-neutral artifact contract and human-readable renderers.
-2. Start one durable workspace-build run automatically after Surveyor completion and resume it after authorization.
+1. Make `surveyor.md` and `connectors.md` compile a standalone `fde.md`, then start one durable FDE run automatically after Surveyor completion.
+2. Resume that exact FDE run after each authorization without requiring a user message.
 3. Add generic artifact actions, refresh, hide, and reorder without application-specific code.
-4. Give the agent compact cross-connector awareness and retrieve provider detail on demand.
+4. Replace raw provider JSON with human-readable artifact projections and retrieve cross-connector detail on demand.
 5. Remove unsupported Live View, selector, model-provider, and arbitrary MCP-registry paths after their callers are gone.
 
 Each sprint must leave the existing real connector path usable. Named applications such as Slack and Google Drive are fixtures and examples only.
@@ -56,8 +66,8 @@ Provider execution receipts and user-facing artifacts are separate concepts. A r
 
 ## Automatic build flow
 
-1. Surveyor completion persists the user's goals, role, working preferences, and selected applications.
-2. Cordia creates one system-owned build run. It selects at most five initial artifacts that directly support the Surveyor goals.
+1. Surveyor completion atomically writes `surveyor.md`, `connectors.md`, and their compiled `fde.md`.
+2. Cordia creates one system-owned build run whose assignment is to execute `fde.md` immediately. The run selects at most five initial artifacts that directly support the compiled plan.
 3. For each required source, the run checks connection state before discovery or execution.
 4. If authorization is required, Cordia opens the provider flow in a popup when the browser permits it and shows a clear in-page fallback link when it does not.
 5. The callback verifies provider health, closes or returns from the authorization surface, and resumes the exact waiting run.
@@ -68,7 +78,7 @@ Reloading the page does not restart Surveyor or duplicate the build. Durable sur
 
 ## Cross-connector context
 
-Cordia does not preload an entire Drive, Slack history, or other provider corpus into model context. It keeps a compact workspace index containing connected source identities, available tool summaries, artifact summaries, and provenance. When a task needs detail, the agent searches or reads the relevant connected source automatically.
+Cordia does not preload an entire Drive, Slack history, or other provider corpus into model context. `fde.md` identifies the sources and intended work. When a task needs detail, the agent searches or reads the relevant connected source automatically and retains bounded artifact provenance.
 
 For example, an action from a Drive-derived project artifact can ask Cordia to send an update in a messaging application. The action automatically supplies the artifact's source and visible context. Cordia resolves the messaging connector and retrieves any missing source detail itself. It asks one question only when the recipient, content, or authorization boundary remains genuinely ambiguous.
 
@@ -88,7 +98,7 @@ After replacement callers exist, remove these beta paths rather than maintaining
 - arbitrary MCP registry installation, credential setup, persistence, and remote-server execution paths;
 - duplicate in-process workspace MCP dispatch where direct calls already own the same operation.
 
-The Pipedream application MCP path is retained. Markdown compilation is not removed in the first sprints because it currently participates in Surveyor/operator context; it can be simplified only after the automatic build uses an equivalent compact state source.
+The Pipedream application MCP path and the three-document Markdown compiler are retained. They are the beta's universal connection path and workspace-build control plane.
 
 ## Failure truth and acceptance
 
@@ -97,6 +107,7 @@ The UI distinguishes `building`, `authorization required`, `approval required`, 
 The beta slice is accepted when:
 
 - completing Surveyor starts a build without a chat message;
+- `fde.md` contains the user-working instructions and connector-working instructions needed to execute the build without separately loading `surveyor.md` and `connectors.md`;
 - an authorization interruption resumes the same build automatically;
 - a nested provider result renders without JSON syntax or secret/auth metadata;
 - at least two unrelated application fixtures use the same artifact and action code;
