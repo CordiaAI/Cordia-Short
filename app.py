@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from functools import wraps
 from pathlib import Path
@@ -10,7 +11,7 @@ from flask import Flask, jsonify, redirect, request, send_from_directory
 from cordia.agent import Agent, AgentBusy, AgentUnavailable, InvalidAgentAction
 from cordia.agent_runs import AgentRuns
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
-from cordia.connectors import CONNECTORS, resolve_connector
+from cordia.connectors import catalog_for_onboarding, resolve_application
 from cordia.onboarding import normalize_applications
 from cordia.store import SURVEY_FIELDS, Store
 from cordia.survey import STAGE_ORDER, public_stage_schema
@@ -39,7 +40,46 @@ def load_local_env(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         name, value = line.split("=", 1)
-        os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
+        name = name.strip()
+        if not os.environ.get(name):
+            os.environ[name] = value.strip().strip('"').strip("'")
+
+
+def resolve_action_starter(applications: list[dict], value) -> dict | None:
+    """Resolve a UI action reference from server-owned Surveyor state."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("workspace action is invalid")
+    connector_id = str(value.get("connector_id") or "").strip()
+    action_id = str(value.get("action_id") or "").strip()
+    if not connector_id or not action_id:
+        raise ValueError("workspace action is invalid")
+    for application in applications:
+        identities = {
+            str(application.get("registry_id") or "").strip(),
+            str(application.get("application_id") or "").strip(),
+        }
+        if connector_id not in identities:
+            continue
+        action = next(
+            (
+                item
+                for item in application.get("actions") or []
+                if str(item.get("id") or "").strip() == action_id
+            ),
+            None,
+        )
+        if action:
+            return {
+                "connector_id": application.get("registry_id")
+                or application.get("application_id"),
+                "application_name": str(application.get("name") or "this application").strip(),
+                "action_id": action_id,
+                "label": str(action.get("label") or "Run action").strip(),
+                "prompt": str(action.get("prompt") or "").strip(),
+            }
+    raise ValueError("workspace action is invalid")
 
 
 def create_app(
@@ -49,7 +89,11 @@ def create_app(
     connector_runtime=None,
     workspace_client=None,
 ) -> Flask:
-    load_local_env(ROOT / ".env.local")
+    main_checkout = ROOT.parents[1] if ROOT.parent.name == ".worktrees" else ROOT
+    load_local_env(main_checkout / ".env.local")
+    load_local_env(main_checkout / ".env.pipedream.local")
+    if main_checkout != ROOT:
+        load_local_env(ROOT / ".env.local")
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.config.update(
         DATABASE=ROOT / "data" / "cordia.db",
@@ -91,19 +135,24 @@ def create_app(
             stage: public_stage_schema(stage, onboarding["answers"])
             for stage in STAGE_ORDER
         }
-        onboarding["application_catalog"] = [
-            {"id": connector["id"], "name": connector["name"]}
-            for connector in CONNECTORS.values()
-        ]
+        catalog_state = expanded_catalog_state(
+            onboarding["answers"].get("workspace_discovery", {})
+        )
+        applications = catalog_state["applications"]
+        connector_catalog = catalog_for_onboarding(applications)
+        onboarding["application_catalog"] = applications
+        onboarding["application_catalog_status"] = catalog_state["status"]
+        if catalog_state.get("message"):
+            onboarding["application_catalog_message"] = catalog_state["message"]
         discovery = onboarding["answers"].get("workspace_discovery", {})
         if discovery:
             statuses = {
                 connector_id: status
-                for connector_id in CONNECTORS
+                for connector_id in connector_catalog
                 if (status := store.connection_status(user_id, connector_id)) is not None
             }
             normalized = normalize_applications(
-                discovery.get("applications", []), CONNECTORS, statuses
+                discovery.get("applications", []), connector_catalog, statuses
             )
             selected = [
                 {
@@ -111,6 +160,7 @@ def create_app(
                     for field in (
                         "application_id",
                         "name",
+                        "logo",
                         "already_uses",
                         "wants_added",
                         "current_activities",
@@ -119,6 +169,7 @@ def create_app(
                         "control_level",
                         "registry_id",
                         "status",
+                        "actions",
                     )
                 }
                 for application in normalized
@@ -128,6 +179,27 @@ def create_app(
                 onboarding["review"]["selected_applications"] = selected
         return onboarding
 
+    def expanded_catalog_state(discovery: dict) -> dict:
+        catalog_state = runtime.catalog_state("", 100)
+        applications = list(catalog_state["applications"])
+        if catalog_state["status"] != "ready":
+            return catalog_state
+        known_ids = {application["id"] for application in applications}
+        for selected in discovery.get("applications", []):
+            value = selected.get("application_id") or selected.get("name")
+            if not value:
+                continue
+            if selected.get("application_id") and resolve_application(value, applications):
+                continue
+            matches = runtime.catalog_state(str(value), 20)
+            if matches["status"] != "ready":
+                continue
+            for application in matches["applications"]:
+                if application["id"] not in known_ids:
+                    applications.append(application)
+                    known_ids.add(application["id"])
+        return {**catalog_state, "applications": applications}
+
     def state_payload(user_id: int | None = None) -> dict:
         user_id = current_user() if user_id is None else user_id
         if not user_id:
@@ -135,10 +207,26 @@ def create_app(
         onboarding = onboarding_payload(user_id)
         if not store.survey_complete(user_id):
             return {"state": "onboarding", "onboarding": onboarding}
+        workspace_directory = store.workspace_root / str(user_id)
+        needs_fde_bootstrap = not (workspace_directory / "surveyor.md").exists() or not (
+            workspace_directory / "fde.md"
+        ).exists()
+        build_error = None
+        if needs_fde_bootstrap:
+            try:
+                with agent_runs.lock(user_id):
+                    store.fde_markdown(user_id)
+                    agent_runs.start_workspace_build(user_id, locked=True)
+            except AgentBusy:
+                pass
+            except (AgentUnavailable, InvalidAgentAction, ConnectorError, WorkspaceMCPError) as exc:
+                build_error = f"Cordia restored your Surveyor workspace, but could not start its FDE build: {exc}"
+                store.add_message(user_id, "assistant", build_error, kind="agent")
         return {
             "state": "workspace",
+            "build_error": build_error,
             "selected_applications": onboarding.get("selected_applications", []),
-            "operator": store.operator_markdown(user_id),
+            "operator": store.surveyor_markdown(user_id),
             "messages": store.messages(user_id),
             "artifacts": [
                 runtime.decorate_artifact(user_id, artifact)
@@ -150,34 +238,12 @@ def create_app(
         }
 
     def agent_runtime_payload(user_id: int):
-        selected = runtime.agent_runtime(user_id)
-        selected_id = store.connection_setting(user_id, "__runtime__", "agent_model")
-        if not selected and not selected_id:
-            return default_agent_runtime
-        try:
-            available = runtime.agent_provider(user_id) is not None
-        except RuntimeError:
-            available = False
-        if available:
-            return selected
-        connector = CONNECTORS.get(selected_id, {})
-        return {"provider": (selected or {}).get("provider", connector.get("name", "Selected provider")) + " (unavailable)",
-                "model": (selected or {}).get("model") or store.connection_setting(user_id, selected_id, "model") or "unavailable",
-                "source": "connector"}
+        del user_id
+        return default_agent_runtime
 
     def active_agent(user_id: int):
-        try:
-            provider = runtime.agent_provider(user_id)
-        except RuntimeError as exc:
-            raise AgentUnavailable("Selected model credentials are unavailable; reconnect the provider") from exc
-        if not provider:
-            if (runtime.agent_runtime(user_id)
-                    or store.connection_setting(user_id, "__runtime__", "agent_model")):
-                raise AgentUnavailable("Selected model credentials are unavailable; reconnect the provider")
-            return cordia_agent
-        selected = make_agent(provider["credential"], provider["model"])
-        selected.source = "connector"
-        return selected
+        del user_id
+        return cordia_agent
 
     agent_runs = AgentRuns(store, workspace, active_agent)
     app.extensions["agent_runs"] = agent_runs
@@ -192,18 +258,6 @@ def create_app(
                     raise AgentBusy("Finish or cancel the pending authorization first")
                 return handler(*args, **kwargs)
         return execute
-
-    def prepare_selected_setup(user_id: int):
-        pending = agent_runs.latest(user_id)
-        if store.setup_card(user_id) or (pending and pending["status"] == "waiting_connection"):
-            return
-        for application in onboarding_payload(user_id).get("selected_applications", []):
-            connector_id = application.get("registry_id")
-            if (application.get("wants_added") and connector_id in CONNECTORS
-                    and store.connection_status(user_id, connector_id) != "verified"):
-                card = workspace.call(user_id, "connector_start", {"connector_id": connector_id})
-                store.save_setup_card(user_id, card)
-                return
 
     def create_operation_artifact(
         user_id: int, connector_id: str, operation_id: str
@@ -223,42 +277,28 @@ def create_app(
         try:
             resumed = agent_runs.resume(user_id, connector_id, locked=True)
         except (AgentUnavailable, InvalidAgentAction, WorkspaceMCPError):
-            store.add_message(user_id, "assistant", "- The service is verified, but Cordia could not finish your original request. Please submit it again.")
+            store.add_message(
+                user_id,
+                "assistant",
+                "- The service is verified, but Cordia could not resume the FDE build automatically. The build needs attention; you do not need to authorize this service again.",
+            )
             return {"status": "failed", "artifact": None}
         if resumed is not None:
             return {"status": resumed["run"]["status"], **resumed}
         pending = agent_runs.latest(user_id)
         if pending and pending["status"] == "waiting_connection":
             return {"status": "waiting_connection", "artifact": None}
-        connector = resolve_connector(connector_id)
-        if not connector:
-            return {"status": "not_configured", "artifact": None}
-        operation_id = connector.get("post_connect_operation")
-        if not operation_id:
-            store.add_message(
-                user_id,
-                "assistant",
-                f"{connector['name']} is connected and ready.",
-                kind="agent",
-            )
-            return {"status": "not_configured", "artifact": None}
         try:
-            artifact = create_operation_artifact(user_id, connector_id, operation_id)
-        except WorkspaceMCPError:
-            store.add_message(
-                user_id,
-                "assistant",
-                f"{connector['name']} is connected, but its first workspace view could not be loaded yet.",
-                kind="agent",
-            )
-            return {"status": "failed", "artifact": None}
+            connector = runtime.application(connector_id)
+        except ConnectorError:
+            connector = {"name": connector_id}
         store.add_message(
             user_id,
             "assistant",
-            f"{connector['name']} is connected and ready. I updated your workspace automatically.",
+            f"{connector['name']} is connected and its tools are ready for Cordia to use.",
             kind="agent",
         )
-        return {"status": "updated", "artifact": artifact}
+        return {"status": "completed", "artifact": None}
 
     @app.errorhandler(PermissionError)
     def permission_error(exc):
@@ -360,29 +400,83 @@ def create_app(
     @app.post("/api/onboarding/complete")
     def onboarding_complete():
         user_id = require_user()
+        build_error = None
         try:
             with agent_runs.lock(user_id):
-                store.complete_onboarding(user_id, CONNECTORS)
-                prepare_selected_setup(user_id)
+                discovery = store.onboarding_state(user_id)["answers"].get(
+                    "workspace_discovery", {}
+                )
+                catalog = catalog_for_onboarding(
+                    expanded_catalog_state(discovery)["applications"]
+                )
+                store.complete_onboarding(user_id, catalog)
+                try:
+                    agent_runs.start_workspace_build(user_id, locked=True)
+                except (AgentUnavailable, InvalidAgentAction, ConnectorError, WorkspaceMCPError) as exc:
+                    build_error = f"Your Surveyor is saved, but Cordia could not start the workspace build: {exc}"
+                    store.add_message(user_id, "assistant", build_error, kind="agent")
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc), "onboarding": onboarding_payload(user_id)}), 409
         except OSError:
             app.logger.exception("onboarding workspace installation failed")
             return jsonify({"ok": False, "error": "Cordia could not safely create your workspace. Your survey is saved."}), 500
-        except WorkspaceMCPError:
-            return jsonify({"ok": False, "error": "Workspace created, but app setup could not be prepared. Ask Cordia to connect it again.", **state_payload(user_id)}), 502
-        return jsonify({"ok": True, **state_payload(user_id)})
+        return jsonify({"ok": True, "build_error": build_error, **state_payload(user_id)})
 
     @app.post("/api/chat")
     def chat():
         user_id = require_user()
         if not store.survey_complete(user_id):
             return jsonify({"ok": False, "error": "complete Surveyor first"}), 409
-        message = str((request.get_json(silent=True) or {}).get("message", "")).strip()
+        payload = request.get_json(silent=True) or {}
+        message = str(payload.get("message", "")).strip()
         if not message:
             return jsonify({"ok": False, "error": "message is required"}), 400
+        action_starter = None
+        if payload.get("action_starter") is not None:
+            try:
+                action_starter = resolve_action_starter(
+                    onboarding_payload(user_id).get("selected_applications", []),
+                    payload["action_starter"],
+                )
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+        artifact_context = None
+        if payload.get("artifact_id") is not None:
+            try:
+                artifact_id = int(payload["artifact_id"])
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "artifact_id is invalid"}), 400
+            artifact = next(
+                (item for item in store.artifacts(user_id) if item["id"] == artifact_id),
+                None,
+            )
+            if artifact is None:
+                return jsonify({"ok": False, "error": "workspace artifact was not found"}), 404
+            artifact_context = json.dumps(
+                {
+                    key: artifact.get(key)
+                    for key in (
+                        "title",
+                        "type",
+                        "source",
+                        "operation_id",
+                        "summary",
+                        "columns",
+                        "rows",
+                        "items",
+                        "value",
+                    )
+                    if artifact.get(key) is not None
+                },
+                ensure_ascii=False,
+            )
         try:
-            result = agent_runs.start(user_id, message)
+            result = agent_runs.start(
+                user_id,
+                message,
+                context=artifact_context,
+                action_starter=action_starter,
+            )
             return jsonify(
                 {
                     "ok": result["run"]["status"] not in {"failed", "needs_configuration"},
@@ -436,6 +530,17 @@ def create_app(
             message = f"Your preference was saved, but the workspace action failed: {exc}"
             return jsonify({"ok": False, "error": message, **state_payload(user_id)}), 502
 
+    @app.get("/api/connectors/search")
+    def connector_search():
+        user_id = require_user()
+        del user_id
+        query = str(request.args.get("q", "")).strip()[:200]
+        try:
+            catalog = runtime.catalog_state(query, 50)
+        except ConnectorError as exc:
+            return jsonify({"ok": False, "error": str(exc), "applications": []}), 502
+        return jsonify({"ok": catalog["status"] == "ready", **catalog})
+
     @app.get("/api/connectors/oauth/callback")
     def oauth_callback():
         user_id = require_user()
@@ -457,7 +562,6 @@ def create_app(
             if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
                 store.clear_setup_card(user_id)
             workspace_update = continue_after_connection(user_id, connector_id)
-            prepare_selected_setup(user_id)
         query = urlencode(
             {"connected": connector_id, "workspace_update": workspace_update["status"]}
         )
@@ -500,7 +604,6 @@ def create_app(
             if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
                 store.clear_setup_card(user_id)
             workspace_update = continue_after_connection(user_id, connector_id)
-            prepare_selected_setup(user_id)
         return jsonify(
             {
                 "ok": True,
@@ -525,6 +628,22 @@ def create_app(
             if (store.setup_card(user_id) or {}).get("connector_id") == connector_id:
                 store.clear_setup_card(user_id)
         return jsonify({"ok": True, **state_payload(user_id)})
+
+    @app.post("/api/agent/approval")
+    def agent_action_approval():
+        user_id = require_user()
+        payload = request.get_json(silent=True) or {}
+        connector_id = str(payload.get("connector_id") or "").strip()
+        approved = payload.get("approved")
+        if not connector_id or not isinstance(approved, bool):
+            return jsonify({"ok": False, "error": "connector and approval decision are required"}), 400
+        try:
+            result = agent_runs.approve(user_id, connector_id, approved)
+        except LookupError as exc:
+            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 409
+        except (AgentUnavailable, InvalidAgentAction, WorkspaceMCPError) as exc:
+            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
+        return jsonify({"ok": True, **result, **state_payload(user_id)})
 
     @app.post("/api/connectors/select")
     @exclusive_workspace_action

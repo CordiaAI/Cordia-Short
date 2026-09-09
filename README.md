@@ -6,8 +6,8 @@ The product path is intentionally narrow:
 
 ```text
 Sign in -> assessment Parts 1-4 -> Profile Snapshot -> Workspace Discovery
-        -> Workspace Review -> operator.md + connectors.md + fde.md
-        -> same Cordia Agent conversation
+        -> Workspace Review -> surveyor.md + connectors.md -> fde.md
+        -> automatic FDE workspace build
         -> connector setup card -> verified provider operation -> artifact window
 ```
 
@@ -19,11 +19,13 @@ Completion installs three files together under the user's workspace directory:
 
 | File | Responsibility |
 | --- | --- |
-| `operator.md` | Descriptive profile, communication settings, sample prompts, evidence, and explicit response-adjustment history. |
+| `surveyor.md` | Descriptive profile, communication settings, sample prompts, evidence, and explicit response-adjustment history. |
 | `connectors.md` | Selected applications, intended activities, approval boundaries, authentication type, and actual connection status. |
-| `fde.md` | Proposed first workspace slice, workflow, constraints, implementation sequence, and unresolved questions. |
+| `fde.md` | Standalone build instructions compiled from `surveyor.md` and `connectors.md`, including the first workspace slice, workflow, constraints, and ordered execution. |
 
-All three files are supplied to the existing Cordia Agent after completion. Onboarding makes no model requests, collects no connector credentials, performs no OAuth or provider operations, and never verifies a connector from an application selection. Authentication belongs to the later secure setup card and provider flow. A proposed workflow is not an implemented integration.
+Surveyor completion supplies `fde.md` to the existing Cordia Agent and starts the build immediately. The two source documents are already embedded into that compiled plan, so they are not loaded a second time. Authentication remains a user action in the secure provider flow; Cordia opens that flow from the build when the browser permits it, retains an in-page link as fallback, and resumes the same FDE run after successful verification.
+
+An existing version-2 workspace missing the new Markdown contract is rebuilt once from its saved Surveyor answers and starts the same FDE path on first load. It does not send the user through Surveyor again.
 
 Existing users with the old five scalar Surveyor answers must complete version-2 onboarding. Their legacy answers, messages, artifacts, encrypted connections, model selections, and explicit response adjustments remain intact. Compilation overlays explicit adjustments on the new survey baseline in adjustment chronology, even when a later correction targets an older response. Each new adjustment moves one step toward its selected endpoint; a survey setting of `-1` moves to `0` before `1`.
 
@@ -31,20 +33,20 @@ Current local verification and remaining browser/provider limitations are record
 
 ## Bounded agent runtime
 
-The current runtime uses LangChain `create_agent` on LangGraph, not the historical single-action handler below. It reads the three workspace documents, calls declared tools, sees the actual results and then replies. A missing connection pauses execution at a secure setup card. Server verification resumes the same task from its durable checkpoint; **Cancel setup** releases the pending task without performing it.
+The current runtime uses LangChain `create_agent` on LangGraph, not the historical single-action handler below. It reads the compiled `fde.md`, calls declared tools, sees the actual results and then replies. A missing connection pauses execution at a secure setup card. Server verification resumes the same task from its durable checkpoint; **Cancel setup** releases the pending task without performing it.
 
-Survey completion prepares the first supported requested connection automatically. Unsupported applications remain planned. Model requests are bounded to six calls and eight tool executions per task, with one tool at a time. Response adjustments revise wording from saved evidence without replaying operations. Framework research, real-provider evidence and limits are in [agent-framework.md](docs/agent-framework.md).
+Survey completion starts the FDE build, which prepares required connections through the universal catalog. Unsupported applications remain planned. Model requests are bounded to six calls and eight tool executions per task, with one tool at a time. Response adjustments revise wording from saved evidence without replaying operations. Framework research, real-provider evidence and limits are in [agent-framework.md](docs/agent-framework.md).
 
 Checkpoint files and `agent-locks/` are created beside the configured database. The service account needs write access there. These contain private execution data and belong in restricted backups, never Git. This is a single-VPS design, not a tested multi-host service. Per-task limits are not account spending quotas or public-launch abuse protection.
 
 ## Historical runtime evidence (2026-08-26; not current onboarding release proof)
 
-- Registration, password authentication, sessions, Surveyor, readable `operator.md`, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
-- Every Cordia Agent response offers **Helpful** and **Adjust response** controls. A selected adjustment moves one operator preference toward `-1` or `1`, records evidence against that response, updates `operator.md`, and retries the original request.
+- Registration, password authentication, sessions, Surveyor, readable `surveyor.md`, continuous chat, generic setup cards, generic artifact windows, and sign-out are implemented.
+- Every Cordia Agent response offers **Helpful** and **Adjust response** controls. A selected adjustment moves one operator preference toward `-1` or `1`, records evidence against that response, updates `surveyor.md` and `fde.md`, and retries the original request.
 - A real OpenAI request through `cordia.agent.Agent` returned a valid `propose_connector` action for Google Drive.
 - The complete browser path was exercised from sign-in through all five Surveyor answers and the real agent request. The browser console had no errors.
 - The generic setup card persisted after a full page refresh; this was caught and fixed during browser verification.
-- Cordia now acts as the MCP host/client for a private, authenticated workspace server. Connector discovery, setup, status, operations, artifacts, `operator.md`, connector state, and artifacts are exposed through that user-bound MCP contract.
+- Cordia now acts as the MCP host/client for a private, authenticated workspace server. Connector discovery, setup, status, operations, artifacts, `surveyor.md`, connector state, and artifacts are exposed through that user-bound MCP contract.
 - The application uses the official MCP Python SDK's in-memory transport. Tool discovery, schema validation, and invocation still pass through MCP without adding another service or public endpoint.
 - Model actions no longer call connector execution or artifact storage directly. The host maps bounded actions to MCP tools and returns explicit failures without creating substitute artifacts.
 - Expired Google access tokens are refreshed automatically when Google issued a refresh token. A failed or unavailable refresh is reported rather than hidden.
@@ -68,36 +70,11 @@ Open [the local application](http://127.0.0.1:5050/). The default local database
 
 Assessment and discovery work without a model key. Agent turns require an `OPENAI_API_KEY` supplied privately through the environment or ignored `.env.local`, or a verified user-selected provider. Missing configuration returns an explicit unavailable error; it is not a successful model call. Never commit or paste credentials into chat.
 
-## Enable the real Google Drive proof
+## Universal connector configuration
 
-In Google Cloud Console:
+Cordia uses one Pipedream Connect project as the connector substrate. The Cordia operator configures that project once through the ignored `.env.local`; end users never retrieve Cordia's project credentials and never configure an application-specific client in Cordia. Each user only completes the provider-owned authorization or credential screen that Cordia opens for the application selected through the universal catalog.
 
-1. Create or select a project and enable the Google Drive API.
-2. Configure the OAuth consent screen.
-3. Create an OAuth client with application type **Web application**.
-4. Add every environment you intend to test as an exact authorized redirect URI. Google requires an exact match:
-
-   `http://127.0.0.1:5050/api/connectors/oauth/callback`
-
-   `https://beta.cordiacode.com/api/connectors/oauth/callback`
-
-5. Add the resulting values directly to ignored `.env.local`:
-
-```dotenv
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-CORDIA_BASE_URL=http://127.0.0.1:5050
-```
-
-Restart the application. Sign in, complete Surveyor, and tell Cordia `Connect Google Drive`. The connection is marked verified only after a successful Drive `files.list` response. Then ask `Show my recent Drive files`; a real provider-derived table artifact should appear.
-
-Cordia completes discovery, authorization URL construction, token exchange, encrypted storage, verification, refresh, and artifact creation automatically. The user only clicks **Continue with Google** and approves access on Google's page. Google credentials and passwords are never entered into Cordia.
-
-## API-key connector proof
-
-Tell Cordia `Connect OpenAI API`. Cordia renders the same generic connector card as a secure password field outside chat. The submitted key is verified using the registry's declared `list_models` request. Only a successful provider response marks the connection verified; rejected keys are removed. After verification, ask Cordia to `List my OpenAI models` to create a provider-derived table artifact, then select **Use model** beside the model that should power later Cordia Agent messages.
-
-Adding another API-key service requires a declarative record in `cordia/connectors.py`: aliases, secure fields, header template, verification operation, declared HTTPS operations, and artifact mapping. It does not require another runtime or frontend component.
+Application names in tests and screenshots are examples. Adding another catalog application must not add an application record, OAuth URL, scope, operation map, logo, or frontend branch to Cordia source code.
 
 ## Private Workspace MCP boundary
 
@@ -113,7 +90,7 @@ Available tools:
 
 Available resources:
 
-- `cordia://operator`
+- `cordia://surveyor`
 - `cordia://connectors`
 - `cordia://artifacts`
 
@@ -135,10 +112,10 @@ The automated onboarding and graph journeys use real temporary SQLite databases,
 
 ## Scope guardrails
 
-- `cordia/connectors.py` contains provider data and aliases.
+- `cordia/connectors.py` normalizes provider-returned application and tool records; it contains no application catalog.
 - `cordia/connector_runtime.py` contains the only connector execution path.
 - No provider-specific Python modules or UI components.
 - Credentials are encrypted at rest and excluded from model input, operator memory, messages, artifacts, and responses.
-- OAuth and API-key connectors share the same registry, runtime, MCP, and artifact path.
-- Provider endpoints must be declared in code and use HTTPS; users cannot submit arbitrary server URLs.
+- Provider-managed OAuth and credential connectors share the same catalog, runtime, MCP, and artifact path.
+- Cordia calls only the configured connector substrate and installed MCP servers; users cannot submit arbitrary execution URLs.
 - No deployment, billing, installer, Alidora, marketplace, or automation work belongs in this slice.

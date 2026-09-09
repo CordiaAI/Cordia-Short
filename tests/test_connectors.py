@@ -1,139 +1,89 @@
 import json
-import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
-from cordia.connectors import CONNECTORS, resolve_connector, validate_registry
+from cordia.connectors import public_application, public_tool, resolve_application
 from cordia.store import Store
 
 
-class ConnectorRegistryTests(unittest.TestCase):
-    def test_google_drive_aliases_resolve_to_one_record(self):
-        self.assertEqual("google_drive", resolve_connector("Google Drive")["id"])
-        self.assertEqual("google_drive", resolve_connector("drive")["id"])
-        self.assertEqual("google_drive", resolve_connector("gdrive")["id"])
+APP_ALPHA = {
+    "id": "app_alpha",
+    "name": "Team Chat Alpha",
+    "logo": "https://cdn.example.test/alpha.png",
+    "description": "Team communication",
+    "categories": ["Communication"],
+    "auth_kind": "oauth",
+}
+APP_BETA = {
+    "id": "app_beta",
+    "name": "Cloud Files Beta",
+    "logo": "https://cdn.example.test/beta.png",
+    "description": "Cloud files",
+    "categories": ["Files"],
+    "auth_kind": "oauth",
+}
 
-    def test_unknown_connector_returns_none(self):
-        self.assertIsNone(resolve_connector("imaginary service"))
 
-    def test_api_key_connector_aliases_resolve_to_one_declarative_record(self):
-        connector = resolve_connector("OpenAI")
-
-        self.assertEqual("openai_api", connector["id"])
-        self.assertEqual("api_key", connector["auth"]["kind"])
-        self.assertEqual(["list_models"], list(connector["operations"]))
-
-    def test_connectors_may_declare_a_valid_post_connect_operation(self):
-        validate_registry()
-        self.assertEqual(
-            "list_recent_files", CONNECTORS["google_drive"]["post_connect_operation"]
-        )
-        self.assertEqual("list_models", CONNECTORS["openai_api"]["post_connect_operation"])
-
-    def test_google_drive_declares_connector_neutral_live_view_contract(self):
-        validate_registry()
-        live_view = CONNECTORS["google_drive"]["live_view"]
-
-        self.assertEqual("list_recent_files", live_view["operation"])
-        self.assertEqual("/static/assets/google-drive.png", live_view["logo"])
-        self.assertEqual(
-            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
-            live_view["required_scopes"],
-        )
-        self.assertTrue(live_view["permission"]["data"])
-        self.assertTrue(live_view["permission"]["actions"])
-        self.assertEqual("Continue with Google", live_view["permission"]["authorize_label"])
-
-    def test_malformed_record_is_rejected(self):
-        malformed = {
-            "broken": {
-                "id": "broken",
-                "name": "Broken",
-                "aliases": [],
-                "auth": {"kind": "oauth2"},
+class ProviderRecordTests(unittest.TestCase):
+    def test_provider_application_is_normalized_without_static_contract_data(self):
+        application = public_application(
+            {
+                "name_slug": "app_alpha",
+                "name": "Team Chat Alpha",
+                "img_src": "https://cdn.example.test/alpha.png",
+                "auth_type": "oauth",
+                "categories": ["Communication"],
             }
-        }
-        with self.assertRaisesRegex(ValueError, "operations"):
-            validate_registry(malformed)
+        )
 
-    def test_registry_contains_no_runtime_callable(self):
-        self.assertNotIn("handler", json.dumps(CONNECTORS))
-        self.assertEqual("oauth2", CONNECTORS["google_drive"]["auth"]["kind"])
+        self.assertEqual("app_alpha", application["id"])
+        self.assertEqual("Team Chat Alpha", application["name"])
+        self.assertNotIn("authorize_url", json.dumps(application))
+        self.assertNotIn("operations", application)
 
-    def test_api_key_record_requires_https_fields_header_and_verification_operation(self):
-        base = {
-            "id": "custom",
-            "name": "Custom",
-            "aliases": [],
-            "auth": {
-                "kind": "api_key",
-                "fields": [{"name": "api_key", "label": "API key", "type": "password"}],
-                "header": {"name": "Authorization", "template": "Bearer {api_key}"},
-                "verify_operation": "list_items",
-            },
-            "operations": {
-                "list_items": {
-                    "method": "GET",
-                    "url": "https://api.example.com/items",
-                    "result_key": "items",
-                    "artifact": {"fields": ["name"]},
-                }
-            },
-        }
+    def test_two_unrelated_opaque_applications_resolve_from_runtime_catalog(self):
+        self.assertEqual("app_alpha", resolve_application("Team Chat Alpha", [APP_ALPHA, APP_BETA])["id"])
+        self.assertEqual("app_beta", resolve_application("app_beta", [APP_ALPHA, APP_BETA])["id"])
+        self.assertIsNone(resolve_application("not present", [APP_ALPHA, APP_BETA]))
 
-        missing_header = json.loads(json.dumps(base))
-        del missing_header["auth"]["header"]
-        with self.assertRaisesRegex(ValueError, "header"):
-            validate_registry({"custom": missing_header})
+    def test_exact_current_display_name_wins_over_a_legacy_identifier(self):
+        applications = [
+            {**APP_ALPHA, "id": "work", "name": "Work (legacy)"},
+            {**APP_BETA, "id": "work_v2", "name": "Work"},
+        ]
 
-        visible_field = json.loads(json.dumps(base))
-        visible_field["auth"]["fields"][0]["type"] = "text"
-        with self.assertRaisesRegex(ValueError, "password"):
-            validate_registry({"custom": visible_field})
+        self.assertEqual("work_v2", resolve_application("work", applications)["id"])
 
-        missing_label = json.loads(json.dumps(base))
-        del missing_label["auth"]["fields"][0]["label"]
-        with self.assertRaisesRegex(ValueError, "label"):
-            validate_registry({"custom": missing_label})
+    def test_provider_tool_schema_and_safety_annotations_are_preserved(self):
+        tool = public_tool(
+            {
+                "name": "opaque_action",
+                "title": "Opaque action",
+                "inputSchema": {"type": "object", "properties": {"target": {"type": "string"}}},
+                "annotations": {"readOnlyHint": False, "destructiveHint": True},
+            }
+        )
 
-        insecure_url = json.loads(json.dumps(base))
-        insecure_url["operations"]["list_items"]["url"] = "http://api.example.com/items"
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
-            validate_registry({"custom": insecure_url})
-
-        unknown_verification = json.loads(json.dumps(base))
-        unknown_verification["auth"]["verify_operation"] = "missing"
-        with self.assertRaisesRegex(ValueError, "verification"):
-            validate_registry({"custom": unknown_verification})
-
-    def test_selector_must_reference_declared_artifact_and_credential_fields(self):
-        missing_value = json.loads(json.dumps(CONNECTORS["openai_api"]))
-        missing_value["selector"]["value_field"] = "missing"
-        with self.assertRaisesRegex(ValueError, "artifact"):
-            validate_registry({"openai_api": missing_value})
-
-        missing_credential = json.loads(json.dumps(CONNECTORS["openai_api"]))
-        missing_credential["selector"]["credential_field"] = "missing"
-        with self.assertRaisesRegex(ValueError, "credential"):
-            validate_registry({"openai_api": missing_credential})
+        self.assertEqual("opaque_action", tool["id"])
+        self.assertTrue(tool["annotations"]["destructiveHint"])
+        self.assertIn("target", tool["input_schema"]["properties"])
 
 
-class ConnectorRuntimeTests(unittest.TestCase):
+class UniversalConnectorRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.db_path = root / "cordia.db"
-        self.store = Store(self.db_path, root / "workspaces")
+        self.store = Store(root / "cordia.db", root / "workspaces")
         self.user_id = self.store.register("person@example.com", "correct horse battery")
         self.calls = []
         self.env = {
-            "GOOGLE_CLIENT_ID": "google-client-id",
-            "GOOGLE_CLIENT_SECRET": "google-client-secret",
+            "PIPEDREAM_CLIENT_ID": "provider-client",
+            "PIPEDREAM_CLIENT_SECRET": "provider-secret",
+            "PIPEDREAM_PROJECT_ID": "project-123",
+            "PIPEDREAM_ENVIRONMENT": "development",
             "CORDIA_BASE_URL": "http://127.0.0.1:5050",
         }
 
@@ -141,463 +91,78 @@ class ConnectorRuntimeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def transport(self, method, url, headers, data, timeout):
-        self.calls.append(
-            {"method": method, "url": url, "headers": headers, "data": data, "timeout": timeout}
-        )
-        if url == "https://oauth2.googleapis.com/token":
-            return {
-                "access_token": "provider-access-token",
-                "refresh_token": "provider-refresh-token",
-                "expires_in": 3600,
-                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
-                "token_type": "Bearer",
-            }
-        if url.startswith("https://www.googleapis.com/drive/v3/files"):
-            return {
-                "files": [
-                    {
-                        "id": "file-1",
-                        "name": "Plan.md",
-                        "mimeType": "text/markdown",
-                        "modifiedTime": "2026-08-24T12:00:00Z",
-                        "webViewLink": "https://drive.google.com/file-1",
-                    }
-                ]
-            }
-        if url == "https://api.openai.com/v1/models":
-            if headers.get("Authorization") != "Bearer user-openai-key":
-                raise OSError("invalid API key")
-            return {
-                "data": [
-                    {"id": "gpt-5-mini", "owned_by": "openai"},
-                    {"id": "gpt-4.1-mini", "owned_by": "system"},
-                    {"id": "text-embedding-3-small", "owned_by": "openai"},
-                ]
-            }
+        self.calls.append({"method": method, "url": url, "headers": headers, "data": data})
+        if url.endswith("/oauth/token"):
+            return {"access_token": "developer-token", "expires_in": 3600}
+        if url.endswith("/connect/apps"):
+            records = [
+                {"name_slug": "app_alpha", "name": "Team Chat Alpha", "img_src": APP_ALPHA["logo"], "auth_type": "oauth"},
+                {"name_slug": "app_beta", "name": "Cloud Files Beta", "img_src": APP_BETA["logo"], "auth_type": "oauth"},
+            ]
+            query = str((data or {}).get("q", "")).lower()
+            if query:
+                records = [item for item in records if query in item["name"].lower() or query == item["name_slug"]]
+            return {"data": records}
+        if url.endswith("/connect/project-123/tokens"):
+            return {"connect_link_url": "https://connect.example.test/session-token"}
+        if url.endswith("/connect/project-123/accounts"):
+            return {"data": [{"id": "account-456", "dead": False, "app": {"name_slug": data["app"]}}]}
         raise AssertionError(f"unexpected request: {method} {url}")
 
-    def runtime(self):
-        return ConnectorRuntime(self.store, env=self.env, transport=self.transport)
+    def runtime(self, env=None):
+        return ConnectorRuntime(self.store, env=self.env if env is None else env, transport=self.transport)
 
-    def test_start_connection_returns_owner_bound_google_redirect(self):
-        setup = self.runtime().start_connection(self.user_id, "drive")
+    def test_catalog_is_dynamic_and_preserves_two_unrelated_provider_apps(self):
+        state = self.runtime().catalog_state()
+
+        self.assertEqual("ready", state["status"])
+        self.assertEqual(["app_alpha", "app_beta"], [item["id"] for item in state["applications"]])
+        apps_call = next(call for call in self.calls if call["url"].endswith("/connect/apps"))
+        self.assertEqual("Bearer developer-token", apps_call["headers"]["Authorization"])
+
+    def test_missing_provider_configuration_is_truthful_and_has_no_fallback_catalog(self):
+        state = self.runtime(env={}).catalog_state()
+
+        self.assertEqual("needs_configuration", state["status"])
+        self.assertEqual([], state["applications"])
+        self.assertIn("PIPEDREAM_PROJECT_ID", state["message"])
+        self.assertEqual([], self.calls)
+
+    def test_start_connection_uses_customer_scoped_managed_auth(self):
+        setup = self.runtime().start_connection(self.user_id, "app_alpha")
 
         self.assertEqual("oauth_redirect", setup["type"])
-        query = parse_qs(urlparse(setup["action_url"]).query)
-        self.assertEqual(["google-client-id"], query["client_id"])
-        self.assertEqual(
-            ["http://127.0.0.1:5050/api/connectors/oauth/callback"], query["redirect_uri"]
-        )
-        self.assertEqual(
-            ["https://www.googleapis.com/auth/drive.metadata.readonly"], query["scope"]
-        )
-        self.assertEqual(["offline"], query["access_type"])
-        self.assertEqual(["false"], query["include_granted_scopes"])
-        self.assertTrue(query["state"][0])
-        self.assertTrue(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
-        self.assertFalse(self.store.consume_oauth_state(self.user_id, "google_drive", query["state"][0]))
+        self.assertEqual("app_alpha", parse_qs(urlparse(setup["action_url"]).query)["app"][0])
+        token_call = next(call for call in self.calls if call["url"].endswith("/tokens"))
+        self.assertEqual(f"cordia:{self.user_id}", token_call["data"]["external_user_id"])
+        self.assertIn("state=", token_call["data"]["success_redirect_uri"])
+        self.assertNotIn("provider-secret", json.dumps(setup))
 
-    def test_live_view_access_is_derived_from_verified_provider_scopes(self):
-        self.store.save_connection(
-            self.user_id,
-            "google_drive",
-            "verified",
-            {
-                "access_token": "provider-access-token",
-                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
-            },
-        )
-
-        access = self.runtime().live_view_access(self.user_id, "google_drive")
-
-        self.assertEqual("granted", access["status"])
-        self.assertEqual("list_recent_files", access["operation"])
-        self.assertNotIn("provider-access-token", json.dumps(access))
-
-    def test_live_view_access_requests_only_missing_declared_scopes(self):
-        self.store.save_connection(
-            self.user_id,
-            "google_drive",
-            "verified",
-            {"access_token": "provider-access-token", "scope": "openid"},
-        )
-
-        access = self.runtime().live_view_access(self.user_id, "google_drive")
-        setup = self.runtime().start_connection(
-            self.user_id, "google_drive", requested_scopes=access["missing_scopes"]
-        )
-        query = parse_qs(urlparse(setup["action_url"]).query)
-
-        self.assertEqual("needs_authorization", access["status"])
-        self.assertEqual(
-            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
-            access["missing_scopes"],
-        )
-        self.assertIn("https://www.googleapis.com/auth/drive.metadata.readonly", query["scope"][0])
-        self.assertEqual(["true"], query["include_granted_scopes"])
-
-    def test_incremental_oauth_retains_requested_scopes_when_provider_omits_scope(self):
-        self.store.save_connection(
-            self.user_id,
-            "google_drive",
-            "verified",
-            {
-                "access_token": "old-access-token",
-                "refresh_token": "old-refresh-token",
-                "scope": "openid",
-            },
-        )
-
-        def transport_without_scope(method, url, headers, data, timeout):
-            if url == "https://oauth2.googleapis.com/token":
-                return {
-                    "access_token": "new-access-token",
-                    "expires_in": 3600,
-                    "token_type": "Bearer",
-                }
-            return self.transport(method, url, headers, data, timeout)
-
-        runtime = ConnectorRuntime(
-            self.store, env=self.env, transport=transport_without_scope
-        )
-        access = runtime.live_view_access(self.user_id, "google_drive")
-        setup = runtime.start_connection(
-            self.user_id,
-            "google_drive",
-            requested_scopes=access["missing_scopes"],
-        )
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-
-        runtime.finish_connection(
-            self.user_id, "google_drive", {"state": state, "code": "provider-code"}
-        )
-
-        credentials = self.store.connection_credentials(self.user_id, "google_drive")
-        self.assertEqual("old-refresh-token", credentials["refresh_token"])
-        self.assertNotIn("openid", credentials["scope"].split())
-        self.assertIn(
-            "https://www.googleapis.com/auth/drive.metadata.readonly",
-            credentials["scope"].split(),
-        )
-        self.assertEqual(
-            "granted", runtime.live_view_access(self.user_id, "google_drive")["status"]
-        )
-
-    def test_corrupt_connector_secret_does_not_hide_saved_workspace(self):
-        self.store.save_connection(
-            self.user_id,
-            "google_drive",
-            "verified",
-            {"access_token": "provider-access-token", "scope": "openid"},
-        )
-        with closing(sqlite3.connect(self.db_path)) as database:
-            database.execute(
-                "UPDATE connections SET credentials = ? WHERE user_id = ? AND connector_id = ?",
-                ("corrupt-ciphertext", self.user_id, "google_drive"),
-            )
-            database.commit()
-
-        access = self.runtime().live_view_access(self.user_id, "google_drive")
-
-        self.assertEqual("needs_connection", access["status"])
-        self.assertEqual(
-            ["https://www.googleapis.com/auth/drive.metadata.readonly"],
-            access["missing_scopes"],
-        )
-
-        setup = self.runtime().start_connection(
-            self.user_id,
-            "google_drive",
-            requested_scopes=access["missing_scopes"],
-        )
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-        result = self.runtime().finish_connection(
-            self.user_id,
-            "google_drive",
-            {"state": state, "code": "replacement-provider-code"},
-        )
-
-        self.assertEqual("verified", result["status"])
-        self.assertEqual(
-            "provider-access-token",
-            self.store.connection_credentials(self.user_id, "google_drive")["access_token"],
-        )
-
-    def test_missing_oauth_configuration_is_explicit(self):
-        setup = ConnectorRuntime(self.store, env={}, transport=self.transport).start_connection(
-            self.user_id, "google_drive"
-        )
-        self.assertEqual("needs_configuration", setup["status"])
-        self.assertIn("GOOGLE_CLIENT_ID", setup["message"])
-        self.assertNotIn("action_url", setup)
-
-    def test_api_key_start_returns_generic_secure_credential_form(self):
-        setup = self.runtime().start_connection(self.user_id, "openai")
-
-        self.assertEqual("credential_form", setup["type"])
-        self.assertEqual("openai_api", setup["connector_id"])
-        self.assertEqual("/api/connectors/setup", setup["submit_url"])
-        self.assertEqual(
-            [{"name": "api_key", "label": "OpenAI API key", "type": "password", "required": True}],
-            setup["fields"],
-        )
-        self.assertNotIn("user-openai-key", json.dumps(setup))
-
-    def test_api_key_finish_verifies_provider_and_encrypts_credentials(self):
+    def test_callback_verifies_provider_account_and_persists_only_account_identity(self):
         runtime = self.runtime()
+        setup = runtime.start_connection(self.user_id, "app_beta")
 
-        connection = runtime.finish_connection(
-            self.user_id, "openai_api", {"api_key": "user-openai-key"}
-        )
+        result = runtime.finish_connection(self.user_id, "app_beta", {"state": setup["state"]})
 
-        self.assertEqual({"connector_id": "openai_api", "status": "verified"}, connection)
-        self.assertEqual("Bearer user-openai-key", self.calls[0]["headers"]["Authorization"])
-        with closing(sqlite3.connect(self.db_path)) as database:
-            encrypted = database.execute(
-                "SELECT credentials FROM connections WHERE user_id = ? AND connector_id = ?",
-                (self.user_id, "openai_api"),
-            ).fetchone()[0]
-        self.assertNotIn("user-openai-key", encrypted)
+        self.assertEqual({"connector_id": "app_beta", "status": "verified"}, result)
+        self.assertEqual("verified", self.store.connection_status(self.user_id, "app_beta"))
+        self.assertEqual({"account_id": "account-456"}, self.store.connection_credentials(self.user_id, "app_beta"))
 
-    def test_api_key_provider_failure_never_marks_connection_verified(self):
-        def failing_transport(method, url, headers, data, timeout):
-            raise OSError("provider rejected credential")
-
-        runtime = ConnectorRuntime(self.store, env=self.env, transport=failing_transport)
-
-        with self.assertRaisesRegex(ConnectorError, "verification failed"):
-            runtime.finish_connection(
-                self.user_id, "openai_api", {"api_key": "invalid-user-key"}
-            )
-
-        self.assertNotEqual("verified", self.store.connection_status(self.user_id, "openai_api"))
-        self.assertEqual({}, self.store.connection_credentials(self.user_id, "openai_api"))
-
-    def test_api_key_malformed_success_response_never_marks_connection_verified(self):
-        def malformed_transport(method, url, headers, data, timeout):
-            return {"error": "credential rejected"}
-
-        runtime = ConnectorRuntime(self.store, env=self.env, transport=malformed_transport)
-
-        with self.assertRaisesRegex(ConnectorError, "verification failed"):
-            runtime.finish_connection(
-                self.user_id, "openai_api", {"api_key": "invalid-user-key"}
-            )
-
-        self.assertNotEqual("verified", self.store.connection_status(self.user_id, "openai_api"))
-        self.assertEqual({}, self.store.connection_credentials(self.user_id, "openai_api"))
-
-    def test_api_key_operation_uses_declared_header_and_returns_artifact(self):
+    def test_mcp_configuration_is_scoped_to_user_project_and_dynamic_app(self):
         runtime = self.runtime()
-        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
+        setup = runtime.start_connection(self.user_id, "app_alpha")
+        runtime.finish_connection(self.user_id, "app_alpha", {"state": setup["state"]})
 
-        artifact = runtime.call_operation(self.user_id, "openai_api", "list_models", {})
+        config = runtime.mcp_configuration(self.user_id, "app_alpha")
 
-        self.assertEqual("Available OpenAI models", artifact["title"])
-        self.assertEqual("openai_api", artifact["source"])
-        self.assertEqual(["gpt-5-mini", "openai"], artifact["rows"][0])
-        self.assertNotIn("user-openai-key", json.dumps(artifact))
+        self.assertEqual("https://remote.mcp.pipedream.net/v3", config["endpoint"])
+        self.assertEqual("app_alpha", config["headers"]["x-pd-app-slug"])
+        self.assertEqual(f"cordia:{self.user_id}", config["headers"]["x-pd-external-user-id"])
+        self.assertNotIn("provider-secret", json.dumps(config))
 
-    def test_declared_selector_verifies_and_saves_provider_model(self):
-        runtime = self.runtime()
-        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
-
-        selected = runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
-        artifact = runtime.call_operation(self.user_id, "openai_api", "list_models", {})
-        decorated = runtime.decorate_artifact(self.user_id, artifact)
-
-        self.assertEqual(
-            {"connector_id": "openai_api", "setting": "model", "value": "gpt-5-mini"},
-            selected,
-        )
-        self.assertEqual("gpt-5-mini", decorated["active_value"])
-        self.assertEqual("workspace_settings", decorated["surface"])
-        self.assertEqual(
-            {
-                "endpoint": "/api/connectors/select",
-                "label": "Use model",
-                "value_column": 0,
-                "allowed_values": ["gpt-5-mini", "gpt-4.1-mini"],
-            },
-            decorated["row_action"],
-        )
-        self.assertEqual(
-            {"credential": "user-openai-key", "model": "gpt-5-mini"},
-            runtime.agent_provider(self.user_id),
-        )
-        self.assertEqual(
-            {"provider": "OpenAI API", "model": "gpt-5-mini", "source": "connector"},
-            runtime.agent_runtime(self.user_id),
-        )
-        self.assertNotIn("user-openai-key", json.dumps(decorated))
-
-    def test_declared_selector_rejects_unknown_model_without_changing_selection(self):
-        runtime = self.runtime()
-        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
-        runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
-
-        with self.assertRaisesRegex(ConnectorError, "not available"):
-            runtime.select_value(self.user_id, "openai_api", "invented-model")
-
-        self.assertEqual(
-            "gpt-5-mini",
-            self.store.connection_setting(self.user_id, "openai_api", "model"),
-        )
-
-    def test_declared_selector_rejects_incompatible_model_without_changing_selection(self):
-        runtime = self.runtime()
-        runtime.finish_connection(self.user_id, "openai_api", {"api_key": "user-openai-key"})
-        runtime.select_value(self.user_id, "openai_api", "gpt-5-mini")
-
-        with self.assertRaisesRegex(ConnectorError, "not compatible"):
-            runtime.select_value(self.user_id, "openai_api", "text-embedding-3-small")
-
-        self.assertEqual(
-            "gpt-5-mini",
-            self.store.connection_setting(self.user_id, "openai_api", "model"),
-        )
-
-    def test_latest_successful_agent_provider_selection_wins(self):
-        second = json.loads(json.dumps(CONNECTORS["openai_api"]))
-        second["id"] = "second_ai"
-        second["name"] = "Second AI"
-        second["aliases"] = ["second ai"]
-
-        def two_provider_transport(method, url, headers, data, timeout):
-            credential = headers.get("Authorization")
-            if credential == "Bearer first-key":
-                return {"data": [{"id": "gpt-first", "owned_by": "first"}]}
-            if credential == "Bearer second-key":
-                return {"data": [{"id": "gpt-second", "owned_by": "second"}]}
-            raise OSError("invalid API key")
-
-        with patch.dict(CONNECTORS, {"second_ai": second}):
-            runtime = ConnectorRuntime(self.store, env=self.env, transport=two_provider_transport)
-            runtime.finish_connection(self.user_id, "openai_api", {"api_key": "first-key"})
-            runtime.finish_connection(self.user_id, "second_ai", {"api_key": "second-key"})
-            runtime.select_value(self.user_id, "openai_api", "gpt-first")
-            runtime.select_value(self.user_id, "second_ai", "gpt-second")
-
-            self.assertEqual(
-                {"credential": "second-key", "model": "gpt-second"},
-                runtime.agent_provider(self.user_id),
-            )
-
-    def test_finish_connection_exchanges_code_verifies_provider_and_encrypts_tokens(self):
-        runtime = self.runtime()
-        setup = runtime.start_connection(self.user_id, "google_drive")
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-
-        connection = runtime.finish_connection(
-            self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
-        )
-
-        self.assertEqual("verified", connection["status"])
-        self.assertTrue(any(call["url"] == "https://oauth2.googleapis.com/token" for call in self.calls))
-        self.assertTrue(any("/drive/v3/files" in call["url"] for call in self.calls))
-        with closing(sqlite3.connect(self.db_path)) as database:
-            encrypted = database.execute(
-                "SELECT credentials FROM connections WHERE user_id = ? AND connector_id = ?",
-                (self.user_id, "google_drive"),
-            ).fetchone()[0]
-        self.assertNotIn("provider-access-token", encrypted)
-        self.assertNotIn("provider-refresh-token", encrypted)
-
-    def test_oauth_state_cannot_be_finished_by_another_user_or_reused(self):
-        runtime = self.runtime()
-        setup = runtime.start_connection(self.user_id, "google_drive")
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-        other_user = self.store.register("other@example.com", "correct horse battery")
-
-        with self.assertRaisesRegex(ConnectorError, "state"):
-            runtime.finish_connection(
-                other_user, "google_drive", {"state": state, "code": "authorization-code"}
-            )
-        runtime.finish_connection(
-            self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
-        )
-        with self.assertRaisesRegex(ConnectorError, "state"):
-            runtime.finish_connection(
-                self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
-            )
-
-    def test_operation_uses_declared_endpoint_and_returns_provider_derived_artifact(self):
-        runtime = self.runtime()
-        setup = runtime.start_connection(self.user_id, "google_drive")
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-        runtime.finish_connection(
-            self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
-        )
-
-        artifact = runtime.call_operation(self.user_id, "google_drive", "list_recent_files", {})
-
-        self.assertEqual("table", artifact["type"])
-        self.assertEqual("google_drive", artifact["source"])
-        self.assertEqual("Plan.md", artifact["rows"][0][0])
-        self.assertEqual("https://drive.google.com/file-1", artifact["rows"][0][3])
-        self.assertNotIn("provider-access-token", json.dumps(artifact))
-
-    def test_provider_failure_never_marks_connection_verified(self):
-        def failing_transport(method, url, headers, data, timeout):
-            if url == "https://oauth2.googleapis.com/token":
-                return {"access_token": "token", "expires_in": 3600}
-            raise OSError("provider unavailable")
-
-        runtime = ConnectorRuntime(self.store, env=self.env, transport=failing_transport)
-        setup = runtime.start_connection(self.user_id, "google_drive")
-        state = parse_qs(urlparse(setup["action_url"]).query)["state"][0]
-
-        with self.assertRaisesRegex(ConnectorError, "verification failed"):
-            runtime.finish_connection(
-                self.user_id, "google_drive", {"state": state, "code": "authorization-code"}
-            )
-        self.assertNotEqual("verified", self.store.connection_status(self.user_id, "google_drive"))
-
-    def test_expired_access_token_is_refreshed_before_provider_operation(self):
-        calls = []
-
-        def refresh_transport(method, url, headers, data, timeout):
-            calls.append({"method": method, "url": url, "headers": headers, "data": data})
-            if url == "https://oauth2.googleapis.com/token":
-                self.assertEqual("refresh_token", data["grant_type"])
-                self.assertEqual("provider-refresh-token", data["refresh_token"])
-                return {
-                    "access_token": "new-access-token",
-                    "expires_in": 3600,
-                    "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
-                    "token_type": "Bearer",
-                }
-            if url.startswith("https://www.googleapis.com/drive/v3/files"):
-                self.assertEqual("Bearer new-access-token", headers["Authorization"])
-                return {"files": []}
-            raise AssertionError(f"unexpected request: {method} {url}")
-
-        self.store.save_connection(
-            self.user_id,
-            "google_drive",
-            "verified",
-            {
-                "access_token": "expired-access-token",
-                "refresh_token": "provider-refresh-token",
-                "expires_at": 0,
-                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
-                "token_type": "Bearer",
-            },
-        )
-        runtime = ConnectorRuntime(self.store, env=self.env, transport=refresh_transport)
-
-        artifact = runtime.call_operation(
-            self.user_id, "google_drive", "list_recent_files", {}
-        )
-
-        self.assertEqual([], artifact["rows"])
-        self.assertEqual("new-access-token", self.store.connection_credentials(
-            self.user_id, "google_drive"
-        )["access_token"])
-        self.assertEqual("provider-refresh-token", self.store.connection_credentials(
-            self.user_id, "google_drive"
-        )["refresh_token"])
-        self.assertEqual(2, len(calls))
+    def test_unknown_application_is_not_invented_locally(self):
+        with self.assertRaisesRegex(ConnectorError, "not found"):
+            self.runtime().start_connection(self.user_id, "invented_app")
 
 
 if __name__ == "__main__":

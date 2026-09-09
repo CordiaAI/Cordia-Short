@@ -1,3 +1,83 @@
+window.CordiaVoice = (() => {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const active = new WeakMap();
+
+  function statusFor(button) {
+    return button.parentElement?.querySelector(".voice-status") || null;
+  }
+
+  function setStatus(button, message) {
+    const status = statusFor(button);
+    if (status) status.textContent = message;
+  }
+
+  function enhance(input, button) {
+    if (!input || !button || button.getAttribute("data-voice-ready")) return;
+    button.setAttribute("data-voice-ready", "true");
+    if (!Recognition) {
+      button.disabled = true;
+      button.title = "Voice input is unavailable in this browser";
+      setStatus(button, "Voice input is unavailable in this browser.");
+      return;
+    }
+    button.addEventListener("click", () => {
+      const running = active.get(input);
+      if (running) {
+        running.stop();
+        return;
+      }
+      const recognition = new Recognition();
+      const startingText = input.value.trimEnd();
+      let endedWithError = false;
+      recognition.lang = document.documentElement?.lang || "en-US";
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      recognition.onstart = () => {
+        active.set(input, recognition);
+        button.setAttribute("data-listening", "true");
+        setStatus(button, "Listening. Speak naturally; your words will appear as text.");
+      };
+      recognition.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map((result) => result[0]?.transcript || "")
+          .join(" ")
+          .trim();
+        input.value = `${startingText}${startingText && transcript ? " " : ""}${transcript}`;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      recognition.onerror = (event) => {
+        endedWithError = true;
+        const message = event.error === "not-allowed"
+          ? "Microphone access was blocked. Allow microphone access and try again."
+          : event.error === "no-speech"
+            ? "No speech was detected. Try again when you are ready."
+            : "Voice input stopped. You can keep typing or try again.";
+        setStatus(button, message);
+      };
+      recognition.onend = () => {
+        if (active.get(input) === recognition) active.delete(input);
+        button.removeAttribute("data-listening");
+        if (!endedWithError) setStatus(button, "Voice input stopped.");
+      };
+      try {
+        recognition.start();
+      } catch (_error) {
+        setStatus(button, "Voice input could not start. Try again.");
+      }
+    });
+  }
+
+  function enhanceAll(root) {
+    root.querySelectorAll("[data-voice-target]").forEach((button) => {
+      const input = root.ownerDocument.getElementById(button.getAttribute("data-voice-target"));
+      enhance(input, button);
+    });
+  }
+
+  return { enhance, enhanceAll, supported: Boolean(Recognition) };
+})();
+
 window.CordiaOnboarding = (() => {
   const stages = ["assessment_part_1", "assessment_part_2", "assessment_part_3", "assessment_part_4", "profile_snapshot", "workspace_discovery", "workspace_review"];
   const statusLabels = { requested: "Requested", setup_required: "Setup required", planned: "Planned", verified: "Verified", needs_attention: "Needs attention" };
@@ -71,8 +151,19 @@ window.CordiaOnboarding = (() => {
       if (singleLine) input.type = "text";
       else input.rows = 4;
       input.addEventListener("input", () => { if (!busy) { change(input.value); updateContinue(); } });
-      group.append(caption, input);
+      const inputShell = node("div", undefined, "voice-field");
+      const voice = node("button", undefined, "voice-button");
+      voice.type = "button";
+      voice.setAttribute("data-voice-target", input.id);
+      voice.setAttribute("aria-label", `Speak your answer for ${label}`);
+      voice.setAttribute("title", "Speak your answer");
+      voice.append(node("span", "mic", "material-symbols-outlined"));
+      const voiceStatus = node("span", undefined, "voice-status sr-only");
+      voiceStatus.setAttribute("aria-live", "polite");
+      inputShell.append(input, voice, voiceStatus);
+      group.append(caption, inputShell);
       parent.append(group);
+      window.CordiaVoice.enhance(input, voice);
       return { group, input };
     }
 
@@ -169,9 +260,15 @@ window.CordiaOnboarding = (() => {
 
     function applicationPicker(schema, draft) {
       draft.applications ||= [];
+      let activeIndex = 0;
       const group = question(fields, "applications", "Which applications are involved? (required)");
-      group.append(node("p", "Select the tools involved in this workflow. Selection is planning only; connections are set up later. Do not enter passwords or API keys.", "onboarding-help"));
-      const { input } = textField(group, "application_search", "Search applications or type a name to add", "", renderResults, { singleLine: true, maxLength: 400 });
+      group.append(node("p", "Choose the applications Cordia should prepare for this workspace. Cordia completes every setup step it can and will only ask you for required account approval or credentials.", "onboarding-help"));
+      if (onboarding.application_catalog_status === "needs_configuration") {
+        group.append(node("p", onboarding.application_catalog_message || "The universal application catalog needs server configuration.", "onboarding-error"));
+      }
+      const searchField = textField(group, "application_search", "Search applications or type a name to add", "", renderResults, { singleLine: true, maxLength: 400 });
+      const { input } = searchField;
+      searchField.group.className += " onboarding-application-search";
       const results = node("div", undefined, "onboarding-application-results");
       results.setAttribute("data-application-results", "");
       const manual = node("button", "Add this application", "quiet-button");
@@ -187,23 +284,47 @@ window.CordiaOnboarding = (() => {
         const known = onboarding.application_catalog.find((item) => item.id === id || item.name.toLowerCase() === name.toLowerCase());
         if (draft.applications.some((item) => (known && item.application_id === known.id) || item.name.toLowerCase() === name.toLowerCase())) { error.textContent = "That application is already selected."; return; }
         draft.applications.push({ application_id: known?.id || null, name: known?.name || name, already_uses: false, wants_added: true, current_activities: "", desired_activities: "", inputs_outputs: "", control_level: "suggest_actions_only" });
+        activeIndex = draft.applications.length - 1;
         input.value = "";
         error.textContent = "";
         renderResults(); renderSelected();
         updateContinue();
-        selected.querySelectorAll("textarea")[draft.applications.length * 3 - 3]?.focus();
+        selected.querySelector('[data-application-editor] textarea')?.focus();
       }
 
-      function renderResults() {
+      async function renderResults() {
         results.replaceChildren();
         const search = input.value.trim().toLowerCase();
-        const matches = onboarding.application_catalog.filter((item) => item.name.toLowerCase().includes(search) || item.id.toLowerCase().includes(search));
+        let matches = onboarding.application_catalog.filter((item) => item.name.toLowerCase().includes(search) || item.id.toLowerCase().includes(search));
+        if (search.length >= 2 && onboarding.application_catalog_status === "ready") {
+          try {
+            const response = await api(`/api/connectors/search?q=${encodeURIComponent(search)}`);
+            matches = response.applications;
+            for (const item of matches) {
+              if (!onboarding.application_catalog.some((known) => known.id === item.id)) onboarding.application_catalog.push(item);
+            }
+          } catch (requestError) {
+            error.textContent = requestError.message;
+          }
+        }
+        results.replaceChildren();
         for (const item of matches) {
-          const button = node("button", item.name);
+          const button = node("button", undefined, "application-tile");
           button.type = "button";
-          button.disabled = draft.applications.some((application) => application.application_id === item.id);
-          button.setAttribute("aria-pressed", String(button.disabled));
-          button.addEventListener("click", () => addApplication(item.id, item.name));
+          button.setAttribute("data-connector-id", item.id);
+          const selectedIndex = draft.applications.findIndex((application) => application.application_id === item.id);
+          button.setAttribute("aria-pressed", String(selectedIndex >= 0));
+          if (item.logo) {
+            const logo = node("img");
+            logo.setAttribute("src", item.logo);
+            logo.setAttribute("alt", "");
+            button.append(logo);
+          }
+          button.append(node("span", item.name), node("span", selectedIndex >= 0 ? "Selected" : "Select", "application-tile-state"));
+          button.addEventListener("click", () => {
+            if (selectedIndex >= 0) { activeIndex = selectedIndex; renderSelected(); return; }
+            addApplication(item.id, item.name);
+          });
           results.append(button);
         }
         if (!matches.length) results.append(node("p", "No matching supported application. Add the name below to record it as planned.", "onboarding-help"));
@@ -212,13 +333,26 @@ window.CordiaOnboarding = (() => {
 
       function renderSelected() {
         selected.replaceChildren();
+        if (!draft.applications.length) return;
+        activeIndex = Math.min(activeIndex, draft.applications.length - 1);
+        const tabs = node("div", undefined, "onboarding-selected-tabs");
+        draft.applications.forEach((application, index) => {
+          const tab = node("button", application.name);
+          tab.type = "button";
+          tab.setAttribute("aria-pressed", String(index === activeIndex));
+          tab.addEventListener("click", () => { activeIndex = index; renderSelected(); });
+          tabs.append(tab);
+        });
+        selected.append(tabs);
         draft.applications.forEach((application, index) => {
           const card = node("section", undefined, "onboarding-application");
+          card.hidden = index !== activeIndex;
+          if (!card.hidden) card.setAttribute("data-application-editor", "");
           const heading = node("div", undefined, "onboarding-application-heading");
           const remove = node("button", "Remove", "quiet-button");
           remove.type = "button";
           remove.setAttribute("aria-label", `Remove ${application.name}`);
-          remove.addEventListener("click", () => { if (busy) return; draft.applications.splice(index, 1); renderSelected(); renderResults(); updateContinue(); input.focus(); });
+          remove.addEventListener("click", () => { if (busy) return; draft.applications.splice(index, 1); activeIndex = Math.max(0, activeIndex - (index <= activeIndex ? 1 : 0)); renderSelected(); renderResults(); updateContinue(); input.focus(); });
           heading.append(node("h3", application.name), remove);
           card.append(heading);
           choices(card, `application-${index}-use`, "How does this application fit? Select one or both.", [{ id: "already_uses", label: "I already use it" }, { id: "wants_added", label: "I want it added" }], ["already_uses", "wants_added"].filter((key) => application[key]), (values) => {
@@ -285,7 +419,10 @@ window.CordiaOnboarding = (() => {
       apps.append(node("h2", "Selected applications"));
       for (const application of onboarding.review.selected_applications || onboarding.selected_applications || []) {
         const row = node("div", undefined, "selected-application-row");
-        row.append(node("strong", application.name), node("span", statusLabels[application.status] || "Requested", "application-status"));
+        const identity = node("div", undefined, "application-identity");
+        if (application.logo) { const logo = node("img"); logo.setAttribute("src", application.logo); logo.setAttribute("alt", ""); identity.append(logo); }
+        identity.append(node("strong", application.name));
+        row.append(identity, node("span", statusLabels[application.status] || "Requested", "application-status"));
         apps.append(row);
       }
       apps.append(node("p", "Setup required: supported connector, not connected. Planned: implementation is still needed. Only verified provider checks can establish a connection.", "onboarding-help"));
@@ -381,12 +518,21 @@ window.CordiaOnboarding = (() => {
       if (busy || !draftValid()) return;
       error.textContent = "";
       if (viewedStage === "profile_snapshot") { viewedStage = "workspace_discovery"; renderCurrentStage(); return; }
+      const authorizationWindow = viewedStage === "workspace_review"
+        && (onboarding.selected_applications || []).some((application) => application.status === "setup_required")
+        ? window.open?.("", "cordia-connector-authorization", "popup,width=720,height=820")
+        : null;
       setBusy(true);
       try {
         if (viewedStage === "workspace_review") {
           const state = await api("/api/onboarding/complete", { method: "POST", body: "{}" });
           if (state.state !== "workspace") throw new Error("Your workspace is not complete yet. Please review and try again.");
           onComplete(state);
+          if (state.setup_card?.action_url && authorizationWindow) {
+            authorizationWindow.location.href = state.setup_card.action_url;
+          } else {
+            authorizationWindow?.close();
+          }
         } else {
           const savedStage = viewedStage;
           const response = await api(`/api/onboarding/${savedStage}`, { method: "PUT", body: JSON.stringify(serialize()) });
@@ -396,7 +542,10 @@ window.CordiaOnboarding = (() => {
           // A server save re-scores computed screens; Back never writes a stage.
           renderCurrentStage();
         }
-      } catch (failure) { error.textContent = failure.message || "Unable to save. Your answers are still here."; }
+      } catch (failure) {
+        authorizationWindow?.close();
+        error.textContent = failure.message || "Unable to save. Your answers are still here.";
+      }
       finally { setBusy(false); }
     });
 

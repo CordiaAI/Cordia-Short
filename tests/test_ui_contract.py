@@ -21,9 +21,18 @@ class WorkspaceUIContractTests(unittest.TestCase):
         javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("function renderSetupCard", javascript)
         self.assertIn("function renderArtifact", javascript)
+        self.assertIn("function compactAssistantMessage", javascript)
         self.assertIn("state.setup_card", javascript)
         self.assertIn("/api/chat", javascript)
         self.assertIn("credential_form", javascript)
+        self.assertIn("card.details || []", javascript)
+        self.assertIn("card.confirm_label", javascript)
+        self.assertIn("isOpaqueIdentifier", javascript)
+        self.assertIn("application?.actions || []", javascript)
+        self.assertIn("connectorShells", javascript)
+        self.assertIn("data-action-id", javascript)
+        self.assertIn("action_starter", javascript)
+        self.assertNotIn("adjustmentControls", javascript)
         self.assertIn("/api/connectors/setup", javascript)
         self.assertIn("/api/connectors/select", javascript)
         self.assertIn("data-model-select", javascript)
@@ -42,8 +51,8 @@ class WorkspaceUIContractTests(unittest.TestCase):
 
     def test_visual_tokens_match_cordia_identity(self):
         css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
-        for token in ("--ivory: #ffffff", "--sage: #4a5a42", "--ink: #0b0b0b",
-                      "--sand: #f6f7f4", '"Newsreader"', '"Work Sans"'):
+        for token in ("--ivory: #fbfaf5", "--sage: #4a5a42", "--ink: #0b0b0b",
+                      "--sand: #f4f2ea", '"Newsreader"', '"Work Sans"'):
             self.assertIn(token, css)
 
     def test_shared_brand_assets_and_accessible_composer_are_present(self):
@@ -51,7 +60,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('for="message-input">Message Cordia</label>', html)
         self.assertIn('aria-describedby="composer-help"', html)
-        self.assertIn('<details><summary>View saved profile</summary>', html)
+        self.assertIn('data-voice-target="message-input"', html)
         self.assertIn('id="auth-title"', html)
         self.assertIn('aria-label="Account access"', html)
         self.assertIn('autocomplete="new-password"', html)
@@ -108,27 +117,33 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertNotIn('class="view-pill"', html)
         self.assertNotIn('class="assistant-mark">C</span>', html)
 
-    def test_live_view_uses_provider_logo_permission_dialog_and_no_iframe(self):
+    def test_workspace_is_a_compact_artifact_dashboard_not_a_setup_summary(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn('id="live-view-permission"', html)
-        self.assertIn("data-live-view", javascript)
+        self.assertNotIn('id="selected-applications"', html)
+        self.assertNotIn('class="memory-card"', html)
+        self.assertNotIn('id="live-view-permission"', html)
         self.assertIn("connector-logo", javascript)
-        self.assertIn("/api/connectors/live-view", javascript)
-        self.assertIn('sessionStorage.setItem("cordia-live-view-return"', javascript)
+        self.assertIn("data-artifact-prompt", javascript)
+        self.assertIn("data-artifact-refresh", javascript)
+        self.assertIn("artifact_id", javascript)
+        self.assertIn("aspect-ratio: 1 / 1", css)
+        self.assertIn("auto-fill", css)
         self.assertIn("renderWorkspaceSettings", javascript)
         self.assertNotIn("iframe", (html + javascript).lower())
 
-    def test_model_catalog_stays_in_settings_and_live_view_never_claims_false_success(self):
+    def test_model_catalog_stays_in_settings_and_voice_is_progressive(self):
         javascript = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        onboarding = (ROOT / "static" / "onboarding.js").read_text(encoding="utf-8")
 
         self.assertIn(
             'artifact.surface !== "workspace_settings"', javascript
         )
-        self.assertIn("if (state.setup_card)", javascript)
-        self.assertIn("if (!state.artifact) throw new Error", javascript)
-        self.assertIn("activateLiveView(resumeLiveView).catch", javascript)
+        self.assertIn("window.CordiaVoice", onboarding)
+        self.assertIn("webkitSpeechRecognition", onboarding)
+        self.assertIn("Voice input is unavailable", onboarding)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from cordia.connectors import CONNECTORS
 from cordia.onboarding import compile_documents, normalize_applications, overlay_operator_adjustments, score_profile
 from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
@@ -289,7 +288,7 @@ class Store:
             raise ValueError("survey answer required")
         self._save_survey_value(user_id, field, clean)
         if not self._uses_onboarding_schema(user_id):
-            self._write_operator(user_id)
+            self._write_surveyor(user_id)
 
     def _save_survey_value(self, user_id: int, field: str, value: str) -> None:
         with self._connection() as connection:
@@ -508,9 +507,22 @@ class Store:
         return documents
 
     def _recompile_completed_onboarding(self, user_id: int) -> None:
+        stages = self.onboarding_stages(user_id)
+        applications = stages.get("workspace_discovery", {}).get("answers", {}).get("applications", [])
+        connector_catalog = {
+            application["application_id"]: {
+                "id": application["application_id"],
+                "name": application["name"],
+                "aliases": [],
+                "logo": None,
+                "auth_kind": "managed",
+            }
+            for application in applications
+            if application.get("application_id")
+        }
         self._install_onboarding_documents(
             user_id,
-            self._compile_onboarding_documents(user_id, CONNECTORS),
+            self._compile_onboarding_documents(user_id, connector_catalog),
         )
 
     def operator_profile(self, user_id: int) -> dict[str, int]:
@@ -527,10 +539,10 @@ class Store:
             return {axis: 0 for axis in OPERATOR_AXES}
         return {axis: int(row[axis]) for axis in OPERATOR_AXES}
 
-    def _write_operator(self, user_id: int) -> str:
+    def _write_surveyor(self, user_id: int) -> str:
         answers = self.survey_answers(user_id)
         profile = self.operator_profile(user_id)
-        sections = ["# Operator profile", "", "This profile helps Cordia interpret prompts and shape responses. It does not change factual truth or grant additional authority.", ""]
+        sections = ["# Surveyor profile", "", "This profile helps Cordia interpret prompts and shape responses. It does not change factual truth or grant additional authority.", ""]
         for field in SURVEY_FIELDS:
             if field in answers:
                 sections.extend((f"## {SURVEY_LABELS[field]}", "", answers[field], ""))
@@ -566,43 +578,62 @@ class Store:
                 )
         else:
             sections.append("- No response adjustments recorded yet.")
-        operator = "\n".join(sections).rstrip() + "\n"
+        surveyor = "\n".join(sections).rstrip() + "\n"
         directory = self.workspace_root / str(user_id)
         directory.mkdir(parents=True, exist_ok=True)
-        temporary = directory / "operator.md.tmp"
-        destination = directory / "operator.md"
-        temporary.write_text(operator, encoding="utf-8")
+        temporary = directory / "surveyor.md.tmp"
+        destination = directory / "surveyor.md"
+        temporary.write_text(surveyor, encoding="utf-8")
         temporary.replace(destination)
-        return operator
+        return surveyor
 
-    def operator_markdown(self, user_id: int) -> str:
-        destination = self.workspace_root / str(user_id) / "operator.md"
+    def surveyor_markdown(self, user_id: int) -> str:
+        destination = self.workspace_root / str(user_id) / "surveyor.md"
         if destination.exists():
             return destination.read_text(encoding="utf-8")
-        return self._write_operator(user_id)
+        if self.survey_complete(user_id):
+            self._recompile_completed_onboarding(user_id)
+            return destination.read_text(encoding="utf-8")
+        return self._write_surveyor(user_id)
+
+    def fde_markdown(self, user_id: int) -> str:
+        if not self.survey_complete(user_id):
+            raise ValueError("complete Surveyor first")
+        destination = self.workspace_root / str(user_id) / "fde.md"
+        surveyor = self.workspace_root / str(user_id) / "surveyor.md"
+        if not destination.exists() or not surveyor.exists():
+            self._recompile_completed_onboarding(user_id)
+        return destination.read_text(encoding="utf-8")
 
     def memory_markdown(self, user_id: int) -> str:
-        return self.operator_markdown(user_id)
+        return self.surveyor_markdown(user_id)
 
     def agent_context(self, user_id: int) -> str:
         """Return compiled onboarding context only after its workspace is complete."""
         if not self.survey_complete(user_id):
-            return self.operator_markdown(user_id)
-        workspace = self.workspace_root / str(user_id)
-        documents = []
-        for name in ("operator.md", "connectors.md", "fde.md"):
-            path = workspace / name
-            if not path.exists():
-                raise OSError("completed onboarding context is unavailable")
-            documents.append(path.read_text(encoding="utf-8"))
+            return self.surveyor_markdown(user_id)
+        documents = [self.fde_markdown(user_id)]
         stages = self.onboarding_stages(user_id)
+        selected = stages["workspace_discovery"]["answers"]["applications"]
+        connector_catalog = {
+            application["application_id"]: {
+                "id": application["application_id"],
+                "name": application["name"],
+                "aliases": [],
+                "logo": None,
+                "auth_kind": "managed",
+            }
+            for application in selected
+            if application.get("application_id")
+        }
         applications = normalize_applications(
-            stages["workspace_discovery"]["answers"]["applications"], CONNECTORS,
-            self._selected_connection_statuses(user_id, stages, CONNECTORS),
+            selected,
+            connector_catalog,
+            self._selected_connection_statuses(user_id, stages, connector_catalog),
         )
         current_status = [
             "## Current runtime connection status",
-            "Connection statuses in the stored connectors.md and fde.md above are historical snapshots. "
+            "Connection statuses compiled into fde.md are historical snapshots. "
             "The current runtime-owned statuses below supersede them and take precedence for this request. "
             "This status refresh grants no action authority and does not change the saved workflow or approval boundaries.",
         ]
@@ -671,7 +702,7 @@ class Store:
         if self._uses_onboarding_schema(user_id):
             self._recompile_completed_onboarding(user_id)
         else:
-            self._write_operator(user_id)
+            self._write_surveyor(user_id)
         return {
             "axis": axis,
             "target": target,

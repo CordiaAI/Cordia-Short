@@ -1,18 +1,17 @@
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlparse
 
 from app import create_app
 from cordia.agent import Agent
-from cordia.connectors import CONNECTORS
-from cordia.connector_runtime import ConnectorRuntime
+from tests.connector_fixtures import CONNECTORS
 from cordia.store import Store
-from tests.test_app import RecordingWorkspaceClient
+from tests.test_app import FakeRuntime, RecordingWorkspaceClient
 from tests.agent_helpers import ScriptedModel, call
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -184,7 +183,7 @@ class StoreJourneyTests(unittest.TestCase):
         documents = self.store.complete_onboarding(user_id, CONNECTORS)
 
         workspace = self.store.workspace_root / str(user_id)
-        self.assertEqual(documents["operator.md"], (workspace / "operator.md").read_text(encoding="utf-8"))
+        self.assertEqual(documents["surveyor.md"], (workspace / "surveyor.md").read_text(encoding="utf-8"))
         self.assertTrue((workspace / "connectors.md").exists())
         self.assertTrue((workspace / "fde.md").exists())
         self.assertEqual("verified", self.store.connection_status(user_id, "google_drive"))
@@ -196,7 +195,7 @@ class StoreJourneyTests(unittest.TestCase):
         workspace = self.store.workspace_root / str(user_id)
         workspace.mkdir(parents=True, exist_ok=True)
         before = {
-            "operator.md": b"legacy operator\n",
+            "surveyor.md": b"legacy surveyor\n",
             "connectors.md": b"legacy connectors\n",
             "fde.md": b"legacy fde\n",
         }
@@ -226,7 +225,7 @@ class StoreJourneyTests(unittest.TestCase):
         workspace = self.store.workspace_root / str(user_id)
         workspace.mkdir(parents=True, exist_ok=True)
         before = {
-            "operator.md": b"legacy operator\n",
+            "surveyor.md": b"legacy surveyor\n",
             "connectors.md": b"legacy connectors\n",
             "fde.md": b"legacy fde\n",
         }
@@ -251,7 +250,7 @@ class StoreJourneyTests(unittest.TestCase):
         workspace = self.store.workspace_root / str(user_id)
         workspace.mkdir(parents=True, exist_ok=True)
         before = {
-            "operator.md": b"legacy operator\n",
+            "surveyor.md": b"legacy surveyor\n",
             "connectors.md": b"legacy connectors\n",
             "fde.md": b"legacy fde\n",
         }
@@ -271,7 +270,7 @@ class StoreJourneyTests(unittest.TestCase):
         workspace = self.store.workspace_root / str(user_id)
         workspace.mkdir(parents=True, exist_ok=True)
         before = {
-            "operator.md": b"legacy operator\n",
+            "surveyor.md": b"legacy surveyor\n",
             "connectors.md": b"legacy connectors\n",
             "fde.md": b"legacy fde\n",
         }
@@ -322,15 +321,15 @@ class StoreJourneyTests(unittest.TestCase):
         documents = self.store.complete_onboarding(user_id, CONNECTORS)
         self.store.save_survey_answer(user_id, "name", "Legacy overwrite attempt")
 
-        self.assertEqual(documents["operator.md"], self.store.operator_markdown(user_id))
+        self.assertEqual(documents["surveyor.md"], self.store.surveyor_markdown(user_id))
         self.store.add_message(user_id, "user", "Make this more direct.")
         response_id = self.store.add_message(
             user_id, "assistant", "Here is the report plan.", kind="agent"
         )
         self.store.adjust_operator(user_id, response_id, "directness", 1, "Be more direct")
 
-        operator = self.store.operator_markdown(user_id)
-        self.assertIn("# Cordia operator profile", operator)
+        operator = self.store.surveyor_markdown(user_id)
+        self.assertIn("# Surveyor profile", operator)
         self.assertIn("## Human-facing profile summary", operator)
         self.assertIn(f"Response {response_id}: Be more direct", operator)
         self.assertNotIn("# Operator profile\n", operator)
@@ -341,10 +340,10 @@ class StoreJourneyTests(unittest.TestCase):
         response_id = self.store.add_message(user_id, "assistant", "A plan.", kind="agent")
         self.store.adjust_operator(user_id, response_id, "context", 1, "Infer context")
         workspace = self.store.workspace_root / str(user_id)
-        for name in ("operator.md", "connectors.md", "fde.md"):
+        for name in ("surveyor.md", "connectors.md", "fde.md"):
             path = workspace / name
             path.write_text(path.read_text(encoding="utf-8") + "\nUser-authored workflow clarification.\n", encoding="utf-8")
-        before = {name: (workspace / name).read_bytes() for name in ("operator.md", "connectors.md", "fde.md")}
+        before = {name: (workspace / name).read_bytes() for name in ("surveyor.md", "connectors.md", "fde.md")}
 
         # Real Store transitions using disposable test data, not provider verification.
         for status in ("verified", "needs_attention", "verified"):
@@ -358,7 +357,7 @@ class StoreJourneyTests(unittest.TestCase):
                 self.assertIn("fde.md", current)
                 self.assertIn(f"Google Drive (google_drive): {status}", current)
                 self.assertIn(f"Response {response_id}: Infer context", context)
-                self.assertEqual(3, context.count("User-authored workflow clarification."))
+                self.assertEqual(1, context.count("User-authored workflow clarification."))
                 self.assertEqual(before, {name: (workspace / name).read_bytes() for name in before})
 
     def test_agent_context_downgrades_a_verified_completion_snapshot(self):
@@ -392,10 +391,10 @@ class StoreJourneyTests(unittest.TestCase):
         user_id = complete_all_stages(self.store)
         self.store.complete_onboarding(user_id, CONNECTORS)
         response_id = self.store.add_message(user_id, "assistant", "A plan.", kind="agent")
-        self.assertIn("Explain the reasoning before", self.store.operator_markdown(user_id))
+        self.assertIn("Explain the reasoning before", self.store.surveyor_markdown(user_id))
         for expected in ("Pair the answer with a brief rationale", "Give the answer or proposed next step first"):
             self.store.adjust_operator(user_id, response_id, "implementation", 1, "Answer first")
-            operator = self.store.operator_markdown(user_id)
+            operator = self.store.surveyor_markdown(user_id)
             self.assertIn(expected, operator)
             self.assertNotIn("Explain the reasoning before", operator)
             self.assertIn("assessment_part_3.answer_order=reasoning_first", operator)
@@ -410,7 +409,7 @@ class StoreJourneyTests(unittest.TestCase):
 
         self.store.adjust_operator(user_id, response_id, "directness", 1, "Be more direct")
 
-        self.assertIn("# Operator profile", self.store.operator_markdown(user_id))
+        self.assertIn("# Surveyor profile", self.store.surveyor_markdown(user_id))
 
     def test_register_authenticate_and_session_ownership(self):
         user_id = self.store.register(" Person@Example.com ", "correct horse battery")
@@ -455,14 +454,14 @@ class StoreJourneyTests(unittest.TestCase):
         self.store.save_survey_answer(user_id, "apps", "Google Drive, Slack")
         self.store.save_survey_answer(user_id, "communication", "Big picture first")
 
-        operator = self.store.operator_markdown(user_id)
+        operator = self.store.surveyor_markdown(user_id)
 
-        self.assertIn("# Operator profile", operator)
+        self.assertIn("# Surveyor profile", operator)
         self.assertLess(operator.index("## Name"), operator.index("## Role"))
         self.assertIn("Google Drive, Slack", operator)
         self.assertIn("Context interpretation: Balanced (0)", operator)
         self.assertIn("Implementation preference: Balanced (0)", operator)
-        operator_path = Path(self.temp.name) / "workspaces" / str(user_id) / "operator.md"
+        operator_path = Path(self.temp.name) / "workspaces" / str(user_id) / "surveyor.md"
         self.assertEqual(operator, operator_path.read_text(encoding="utf-8"))
         self.assertFalse((operator_path.parent / "memory.md").exists())
         self.assertTrue(self.store.legacy_survey_complete(user_id))
@@ -486,7 +485,7 @@ class StoreJourneyTests(unittest.TestCase):
         self.assertEqual(0, result["previous"])
         self.assertEqual(1, result["current"])
         self.assertEqual(1, self.store.operator_profile(user_id)["implementation"])
-        operator = self.store.operator_markdown(user_id)
+        operator = self.store.surveyor_markdown(user_id)
         self.assertIn("Implementation preference: Implementation-first (1)", operator)
         self.assertIn(f"Response {response_id}", operator)
         self.assertIn('User selected “Give me the implementation.”', operator)
@@ -646,6 +645,16 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.model_requests = []
         self.workspace = RecordingWorkspaceClient()
+        self.runtime = FakeRuntime()
+        self.runtime.catalog_state = lambda query="", limit=100: {
+            "status": "ready",
+            "applications": [
+                {**item, "description": "Fixture", "categories": []}
+                for item in CONNECTORS.values()
+                if not query or str(query).lower() in item["id"] or str(query).lower() in item["name"].lower()
+            ],
+        }
+        self.runtime.application = lambda connector_id: self.runtime.catalog_state(connector_id)["applications"][0]
         agent = Agent("test-model-key", chat_model=ScriptedModel(callback=self.model_transport))
         self.app = create_app(
             {
@@ -655,9 +664,11 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
                 "SESSION_COOKIE_SECURE": False,
             },
             agent=agent,
+            connector_runtime=self.runtime,
             workspace_client=self.workspace,
         )
         self.store = self.app.extensions["cordia_store"]
+        self.runtime.store = self.store
         self.workspace.store = self.store
         self.client = self.app.test_client()
 
@@ -669,15 +680,19 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.model_requests.append(payload)
         connecting = "connect" in payload["input"][-1]["content"].lower()
         if connecting and not isinstance(messages[-1], ToolMessage):
-            return call("connect_service", connector_id="google_drive")
+            system_context = next(item["content"] for item in payload["input"] if item["role"] == "developer")
+            selected = re.search(r"- Registry ID: ([^\n]+)", system_context)
+            return call("connect_service", connector_id=selected.group(1) if selected else "google_drive")
         return AIMessage(content="Review the report plan.")
 
-    def register_and_complete(self):
+    def register_and_complete(self, *, requires_authorization=False):
         registered = self.client.post("/api/register", json={
             "email": "journey@example.com", "password": "correct-horse-battery",
         })
         self.assertEqual(201, registered.status_code)
         self.assertEqual("onboarding", registered.json["state"])
+        if not requires_authorization:
+            self.store.save_connection(1, "google_drive", "verified", {"account_id": "fixture"})
         return self.complete_via_api()
 
     def complete_via_api(self):
@@ -689,43 +704,112 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         completed = self.client.post("/api/onboarding/complete")
         self.assertEqual(200, completed.status_code, completed.json)
         self.assertEqual("workspace", completed.json["state"])
-        self.assertEqual([], self.model_requests)
+        self.assertGreaterEqual(len(self.model_requests), 1)
         if completed.json["selected_applications"][0]["status"] != "verified":
             self.assertEqual("google_drive", completed.json["setup_card"]["connector_id"])
-            self.assertEqual([(1, "connector_start", {"connector_id": "google_drive"})], self.workspace.calls)
+            self.assertEqual(
+                [
+                    (1, "connectors_search", {"query": "google_drive"}),
+                    (1, "connector_start", {"connector_id": "google_drive"}),
+                ],
+                self.workspace.calls,
+            )
         else:
-            self.assertEqual([], self.workspace.calls)
+            self.assertEqual(
+                [(1, "connectors_search", {"query": "google_drive"})],
+                self.workspace.calls,
+            )
         return completed.json
 
     def test_register_to_compiled_workspace_to_connector_proposal(self):
-        completed = self.register_and_complete()
+        completed = self.register_and_complete(requires_authorization=True)
         workspace = Path(self.temp.name) / "workspaces" / "1"
         documents = {name: (workspace / name).read_text(encoding="utf-8")
-                     for name in ("operator.md", "connectors.md", "fde.md")}
-        self.assertIn("Prompt examples", documents["operator.md"])
-        self.assertIn("Help me plan today.", documents["operator.md"])
+                     for name in ("surveyor.md", "connectors.md", "fde.md")}
+        self.assertIn("Prompt examples", documents["surveyor.md"])
+        self.assertIn("Help me plan today.", documents["surveyor.md"])
         self.assertIn("Google Drive", documents["connectors.md"])
         self.assertIn("Status: setup_required", documents["connectors.md"])
         self.assertIn("Smallest valuable workspace slice", documents["fde.md"])
+        self.assertIn(documents["surveyor.md"], documents["fde.md"])
+        self.assertIn(documents["connectors.md"], documents["fde.md"])
+
+    def test_completed_workspace_bootstraps_fde_without_repeating_surveyor(self):
+        self.register_and_complete()
+        workspace = Path(self.temp.name) / "workspaces" / "1"
+        (workspace / "surveyor.md").unlink()
+        (workspace / "fde.md").unlink()
+        request_count = len(self.model_requests)
+
+        loaded = self.client.get("/api/state")
+
+        self.assertEqual(200, loaded.status_code, loaded.json)
+        self.assertEqual("workspace", loaded.json["state"])
+        self.assertNotIn("onboarding", loaded.json)
+        self.assertTrue((workspace / "surveyor.md").exists())
+        self.assertTrue((workspace / "fde.md").exists())
+        self.assertGreater(len(self.model_requests), request_count)
         self.assertEqual("oauth_redirect", completed["setup_card"]["type"])
         self.assertEqual("setup_required", completed["selected_applications"][0]["status"])
+        self.assertEqual("waiting_connection", completed["agent_run"]["status"])
         self.assertIsNone(self.store.connection_status(1, "google_drive"))
         self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
-
-        chat = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
-
-        self.assertEqual(200, chat.status_code, chat.json)
-        self.assertEqual("google_drive", chat.json["setup_card"]["connector_id"])
-        self.assertEqual("oauth_redirect", chat.json["setup_card"]["type"])
-        self.assertTrue(chat.json["setup_card"]["action_url"].startswith("https://accounts.google.com/"))
-        self.assertEqual(chat.json["setup_card"], self.client.get("/api/state").json["setup_card"])
-        self.assertEqual([(1, "connector_start", {"connector_id": "google_drive"})], self.workspace.calls)
+        self.assertTrue(completed["setup_card"]["action_url"].startswith("https://connect.example.test/"))
+        self.assertEqual(completed["setup_card"], self.client.get("/api/state").json["setup_card"])
+        self.assertEqual(
+            [
+                (1, "connectors_search", {"query": "google_drive"}),
+                (1, "connector_start", {"connector_id": "google_drive"}),
+            ],
+            self.workspace.calls,
+        )
         self.assertEqual(1, len(self.model_requests))
         model_context = "\n".join(item["content"] for item in self.model_requests[0]["input"] if item["role"] == "developer")
         for document in documents.values():
             self.assertIn(document, model_context)
+        self.assertFalse(any(message["role"] == "user" for message in completed["messages"]))
         self.assertIsNone(self.store.connection_status(1, "google_drive"))
         self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
+
+    def test_selected_application_outside_initial_catalog_page_is_resolved_by_name(self):
+        registered = self.client.post("/api/register", json={
+            "email": "catalog-page@example.com", "password": "correct-horse-battery",
+        })
+        self.assertEqual(201, registered.status_code)
+        payloads = complete_onboarding_payloads()
+        payloads["workspace_discovery"]["applications"] = [{
+            "application_id": None,
+            "name": "Cloud Files Beta",
+            "already_uses": True,
+            "wants_added": True,
+            "current_activities": "Store files.",
+            "desired_activities": "Organize files.",
+            "inputs_outputs": "Files in, organized files out.",
+            "control_level": "prepare_for_approval",
+        }]
+        for stage, payload in payloads.items():
+            saved = self.client.put(f"/api/onboarding/{stage}", json=payload)
+            self.assertEqual(200, saved.status_code, saved.json)
+
+        def paged_catalog(query="", limit=100):
+            del limit
+            applications = [
+                {**CONNECTORS["google_drive"], "description": "Fixture", "categories": []}
+            ]
+            if "cloud files beta" in str(query).lower():
+                applications = [{
+                    "id": "app_beta", "name": "Cloud Files Beta", "logo": "",
+                    "description": "Fixture", "categories": [], "auth_kind": "oauth",
+                }]
+            return {"status": "ready", "applications": applications}
+
+        self.runtime.catalog_state = paged_catalog
+
+        completed = self.client.post("/api/onboarding/complete")
+
+        self.assertEqual(200, completed.status_code, completed.json)
+        self.assertEqual("app_beta", completed.json["selected_applications"][0]["registry_id"])
+        self.assertEqual("setup_required", completed.json["selected_applications"][0]["status"])
 
     def test_legacy_migration_preserves_runtime_records_and_explicit_override(self):
         user_id = self.store.register("legacy@example.com", "correct-horse-battery")
@@ -754,9 +838,9 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
             after = {table: connection.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,)).fetchall() for table in tables}
         self.assertEqual(before, after)
         self.assertEqual("Jordan", self.store.survey_answers(user_id)["name"])
-        self.assertEqual({"provider": "OpenAI API", "model": "gpt-5-mini", "source": "connector"}, completed["agent_runtime"])
+        self.assertEqual({"provider": "Cordia", "model": "gpt-5-mini", "source": "server"}, completed["agent_runtime"])
         self.assertEqual("verified", completed["selected_applications"][0]["status"])
-        operator = self.store.operator_markdown(user_id)
+        operator = self.store.surveyor_markdown(user_id)
         self.assertIn("Context interpretation: Implicit / high-context (1)", operator)
         self.assertIn(f"Response {response_id}: Use more context", operator)
         self.assertIn("Scope preference: Detail-first (-1)", operator)
@@ -800,100 +884,6 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertEqual(-1, self.store.operator_profile(1)["directness"])
         self.assertIn("Directness preference: Measured / indirect (-1)", self.model_requests[-1]["input"][0]["content"])
         self.store.complete_onboarding(1, CONNECTORS)
-        self.assertEqual(adjusted.json["operator"], self.store.operator_markdown(1))
-
-
-class ScriptedConnectorAgent(Agent):
-    def __init__(self):
-        super().__init__("fixture-model-key", chat_model=ScriptedModel(callback=self.answer))
-
-    def answer(self, messages):
-        if isinstance(messages[-1], ToolMessage):
-            return AIMessage(content="- The requested provider operation finished.")
-        if "connect" in messages[-1].content.lower():
-            return call("connect_service", connector_id="google_drive")
-        return call("run_operation", connector_id="google_drive", operation_id="list_recent_files")
-
-
-class RealMCPConnectorJourneyTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
-        self.calls = []
-        env = {
-            "GOOGLE_CLIENT_ID": "google-client-id",
-            "GOOGLE_CLIENT_SECRET": "google-client-secret",
-            "CORDIA_BASE_URL": "http://localhost",
-        }
-        store = Store(root / "cordia.db", root / "workspaces")
-        runtime = ConnectorRuntime(store, env=env, transport=self.transport)
-        self.app = create_app(
-            {
-                "TESTING": True,
-                "DATABASE": root / "cordia.db",
-                "WORKSPACE_ROOT": root / "workspaces",
-                "SESSION_COOKIE_SECURE": False,
-            },
-            agent=ScriptedConnectorAgent(),
-            connector_runtime=runtime,
-        )
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def transport(self, method, url, headers, data, timeout):
-        self.calls.append({"method": method, "url": url, "headers": headers, "data": data})
-        if url == "https://oauth2.googleapis.com/token":
-            return {
-                "access_token": "provider-access-token",
-                "refresh_token": "provider-refresh-token",
-                "expires_in": 3600,
-                "scope": "https://www.googleapis.com/auth/drive.metadata.readonly",
-                "token_type": "Bearer",
-            }
-        if url.startswith("https://www.googleapis.com/drive/v3/files"):
-            return {
-                "files": [
-                    {
-                        "id": "file-1",
-                        "name": "Plan.md",
-                        "mimeType": "text/markdown",
-                        "modifiedTime": "2026-08-25T12:00:00Z",
-                        "webViewLink": "https://drive.google.com/file-1",
-                    }
-                ]
-            }
-        raise AssertionError(f"unexpected request: {method} {url}")
-
-    def test_google_oauth_to_mcp_operation_creates_provider_derived_artifact(self):
-        register = self.client.post(
-            "/api/register",
-            json={"email": "person@example.com", "password": "correct horse battery"},
-        )
-        self.assertEqual(201, register.status_code)
-        for stage, payload in complete_onboarding_payloads().items():
-            self.assertEqual(200, self.client.put(f"/api/onboarding/{stage}", json=payload).status_code)
-        self.assertEqual(200, self.client.post("/api/onboarding/complete").status_code)
-
-        setup = self.client.post("/api/chat", json={"message": "Connect Google Drive"})
-        state = parse_qs(urlparse(setup.json["setup_card"]["action_url"]).query)["state"][0]
-        callback = self.client.get(
-            "/api/connectors/oauth/callback", query_string={"state": state, "code": "real-code"}
-        )
-        operation = self.client.post("/api/chat", json={"message": "Show recent Drive files"})
-
-        self.assertEqual(302, callback.status_code)
-        self.assertEqual(200, operation.status_code)
-        self.assertEqual("Plan.md", operation.json["artifact"]["rows"][0][0])
-        self.assertEqual("Plan.md", operation.json["artifacts"][0]["rows"][0][0])
-        serialized = json.dumps(operation.json)
-        self.assertNotIn("provider-access-token", serialized)
-        self.assertNotIn("provider-refresh-token", serialized)
-        self.assertGreaterEqual(
-            len([call for call in self.calls if "/drive/v3/files" in call["url"]]), 2
-        )
-
-
+        self.assertEqual(adjusted.json["operator"], self.store.surveyor_markdown(1))
 if __name__ == "__main__":
     unittest.main()

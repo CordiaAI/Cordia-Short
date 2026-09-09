@@ -11,11 +11,11 @@ import json
 from tests.test_survey import valid_stages
 from cordia.survey import STAGE_ORDER, public_stage_schema, conditional_discovery_fields
 from cordia.onboarding import score_profile, normalize_applications
-from cordia.connectors import CONNECTORS
+from tests.connector_fixtures import CONNECTORS
 stages = valid_stages()
 answers = {key: value['answers'] for key, value in stages.items()}
 cases = [{}, {'inputs':'Notes', 'control_level':'suggest_actions_only'}, {'current_workflow':'Our team reviews every week before a deadline'}, {'control_level':'automate_low_risk','sensitive_data':['financial'],'environment':['company_network']}, {'environment':['web']}]
-print(json.dumps({'schema_version':2, 'current_stage':'workspace_review', 'completed_stages':list(stages), 'answers':answers, 'profile':score_profile(stages), 'review':{'workspace_discovery':answers['workspace_discovery']}, 'application_catalog':[{'id':v['id'],'name':v['name']} for v in CONNECTORS.values()], 'selected_applications':normalize_applications(answers['workspace_discovery']['applications'], CONNECTORS, {}), 'stage_schemas':{s:public_stage_schema(s, answers) for s in STAGE_ORDER}, 'conditional_cases':[[value,conditional_discovery_fields(value)] for value in cases]}))
+print(json.dumps({'schema_version':2, 'current_stage':'workspace_review', 'completed_stages':list(stages), 'answers':answers, 'profile':score_profile(stages), 'review':{'workspace_discovery':answers['workspace_discovery']}, 'application_catalog':[{'id':v['id'],'name':v['name'],'logo':v['logo']} for v in CONNECTORS.values()], 'selected_applications':normalize_applications(answers['workspace_discovery']['applications'], CONNECTORS, {}), 'stage_schemas':{s:public_stage_schema(s, answers) for s in STAGE_ORDER}, 'conditional_cases':[[value,conditional_discovery_fields(value)] for value in cases]}))
 `], { encoding: 'utf8' }));
 const clone = value => JSON.parse(JSON.stringify(value));
 
@@ -47,7 +47,8 @@ function setup(stage = 'assessment_part_1', handler) {
   const root = document.createElement('section');
   for (const [id, tag] of [['onboarding-progress','p'], ['onboarding-title','h1'], ['onboarding-instructions','p'], ['onboarding-form','form']]) { const node = document.createElement(tag); node.id = id; root.append(node); }
   for (const [id, tag] of [['onboarding-fields','div'], ['onboarding-error','p'], ['onboarding-back','button'], ['onboarding-continue','button']]) { const node = document.createElement(tag); node.id = id; root.querySelector('form').append(node); }
-  const window = {};
+  const popups = [];
+  const window = { open() { const popup = { location: { href: '' }, close() { this.closed = true; }, closed: false }; popups.push(popup); return popup; } };
   const sourcePath = path.resolve('static/onboarding.js');
   assert.ok(fs.existsSync(sourcePath), 'onboarding controller is missing');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), { window, document });
@@ -61,7 +62,7 @@ function setup(stage = 'assessment_part_1', handler) {
   };
   const controller = window.CordiaOnboarding.createController({ root, api, onComplete: value => completions.push(value) });
   controller.show(state);
-  return { root, document, state, calls, completions, controller, get: id => root.querySelector(`#${id}`) };
+  return { root, document, state, calls, completions, controller, popups, get: id => root.querySelector(`#${id}`) };
 }
 const group = (ui, field) => ui.root.querySelector(`[data-field="${field}"]`);
 const buttons = node => node.querySelectorAll('button');
@@ -238,7 +239,10 @@ test('discovery uses shared server conditions and never serializes inactive stal
   assert.equal(ui.calls[0].body.sensitive_data_details, undefined);
   assert.equal(ui.calls[0].body.environment_policy, undefined);
   assert.deepEqual(ui.calls[0].body.sensitive_data, []);
-  assert.equal(ui.root.querySelector('img'), null);
+  assert.ok(ui.root.querySelectorAll('img').every((image) =>
+    /^https:\/\//.test(image.getAttribute('src'))
+    && !image.getAttribute('onerror')));
+  assert.doesNotMatch(ui.get('onboarding-fields').textContent, /onerror|alert\(1\)/);
 });
 
 test('browser visibility agrees with server rules for core and trigger combinations', () => {
@@ -287,6 +291,19 @@ test('application search/manual add uses catalog, captures use and control, has 
   assert.ok(ui.calls.every(call => !call.url.includes('/connectors/')));
 });
 
+test('provider application catalog is a logo tile grid and keeps one selected app editor in focus', async () => {
+  const ui = setup('workspace_discovery');
+  const results = ui.root.querySelector('[data-application-results]');
+  const tile = buttons(results).find(button => button.getAttribute('aria-pressed') === 'false');
+  assert.ok(tile, 'provider application tile is missing');
+  assert.ok(tile.getAttribute('data-connector-id'));
+  assert.match(tile.querySelector('img').getAttribute('src'), /^https:\/\//);
+  assert.equal(tile.getAttribute('aria-pressed'), 'false');
+  await tile.fire('click');
+  assert.equal(ui.root.querySelectorAll('[data-application-editor]').length, 1);
+  assert.match(ui.get('onboarding-fields').textContent, /only ask you for required account approval or credentials/i);
+});
+
 test('review uses normalized statuses, completion only invokes callback for workspace state', async () => {
   let success = false;
   const ui = setup('workspace_review', () => success ? { state: 'workspace', selected_applications: [] } : { state: 'onboarding' });
@@ -303,6 +320,18 @@ test('review uses normalized statuses, completion only invokes callback for work
   assert.equal(ui.calls[0].options.method, 'POST');
 });
 
+test('workspace build opens provider authorization without asking the user to continue', async () => {
+  const actionUrl = 'https://provider.example/connect';
+  const ui = setup('workspace_review', () => ({
+    state: 'workspace', selected_applications: [], setup_card: { action_url: actionUrl },
+  }));
+  await submit(ui);
+  assert.equal(ui.completions.length, 1);
+  assert.equal(ui.popups.length, 1);
+  assert.equal(ui.popups[0].location.href, actionUrl);
+  assert.equal(ui.popups[0].closed, false);
+});
+
 test('show can load the server resume endpoint and hide closes the layer', async () => {
   const ui = setup('assessment_part_2');
   await ui.controller.show();
@@ -312,24 +341,26 @@ test('show can load the server resume endpoint and hide closes the layer', async
   assert.equal(ui.root.hidden, true);
 });
 
-test('saved stage navigation preserves disabled catalog selections on the new screen', async () => {
+test('saved stage navigation preserves selected catalog state on the new screen', async () => {
   const ui = setup('assessment_part_4');
   await submit(ui);
   await submit(ui);
   const catalog = ui.root.querySelector('[data-application-results]');
-  const selected = buttons(catalog).find(button => button.textContent === 'Google Drive');
-  assert.equal(selected.disabled, true);
+  const selected = buttons(catalog).find(button => button.textContent.includes('Google Drive'));
+  assert.equal(selected.disabled, false);
   assert.equal(selected.getAttribute('aria-pressed'), 'true');
 });
 
-test('failed discovery save keeps selected catalog entries disabled and safe user text intact', async () => {
+test('failed discovery save keeps selected catalog state and safe user text intact', async () => {
   const ui = setup('workspace_discovery', () => { throw new Error('outcome is required'); });
   const text = '<img src=x onerror=alert(1)> & unusual <words>';
   await input(ui, 'outcome', text);
   await submit(ui);
   assert.equal(ui.root.querySelector('[name="outcome"]').value, text);
-  assert.equal(ui.root.querySelector('img'), null);
-  assert.equal(buttons(ui.root.querySelector('[data-application-results]')).find(button => button.textContent === 'Google Drive').disabled, true);
+  assert.ok(ui.root.querySelectorAll('img').every((image) => !image.getAttribute('onerror')));
+  const selected = buttons(ui.root.querySelector('[data-application-results]')).find(button => button.textContent.includes('Google Drive'));
+  assert.equal(selected.disabled, false);
+  assert.equal(selected.getAttribute('aria-pressed'), 'true');
 });
 
 test('application use, activity, control and removal serialize the exact application contract', async () => {
@@ -359,7 +390,7 @@ test('app integration hides workspace and background navigation during onboardin
   ui.document.querySelector = selector => selector === '.topbar' ? topbar : null;
   ui.document.querySelectorAll = () => [];
   ui.document.addEventListener = () => {};
-  for (const [id, attribute] of [['live-view-permission','data-live-view-confirm'], ['workspace-settings','data-settings-close']]) {
+  for (const [id, attribute] of [['workspace-settings','data-settings-close']]) {
     const button = ui.document.createElement('button'); button.setAttribute(attribute, ''); elements[id].append(button);
   }
   const window = {};
@@ -370,13 +401,17 @@ test('app integration hides workspace and background navigation during onboardin
   assert.equal(elements['app-shell'].hidden, true);
   assert.equal(elements.account.hidden, true);
   assert.equal(topbar.hidden, true, 'background navigation must not remain keyboard-reachable');
-  context.render({ state: 'workspace', messages: [], artifacts: [], selected_applications: [{ name: '<img src=x>', status: 'planned' }] });
+  context.render({
+    state: 'workspace', messages: [],
+    artifacts: [{ id: 1, type: 'table', title: 'Team chat', source: 'team_chat', columns: ['Name'], rows: [['Launch']] }],
+    selected_applications: [{ registry_id: 'team_chat', name: '<img src=x>', logo: 'https://example.test/logo.png', status: 'verified' }],
+  });
   assert.equal(ui.root.hidden, true);
   assert.equal(topbar.hidden, false);
   assert.equal(elements['app-shell'].hidden, false);
   assert.equal(elements.account.hidden, false);
-  assert.ok(elements['selected-applications'].innerHTML.includes('&lt;img src=x&gt;'));
-  assert.ok(elements['selected-applications'].innerHTML.includes('Planned'));
+  assert.ok(elements['artifact-grid'].innerHTML.includes('&lt;img src=x&gt;'));
+  assert.ok(elements['artifact-grid'].innerHTML.includes('https://example.test/logo.png'));
   context.render({ state: 'signed_out' });
   assert.equal(elements['app-shell'].hidden, true);
   assert.equal(elements.account.hidden, true);

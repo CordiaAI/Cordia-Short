@@ -9,12 +9,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0,0" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Cordia home"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24"></a>
-    <span class="workspace-label">My Workspace</span>
+    <span id="workspace-title" class="workspace-label">My Workspace</span>
+    <a class="alidora-link" href="/dashboard/">Alidora</a>
     <button id="back-to-cordia" class="back-button" type="button" disabled aria-disabled="true" title="Cordia home is coming soon">← Back to Cordia</button>
     <div class="top-actions">
       <span id="status-pill" class="status-pill">Checking…</span>
@@ -43,24 +45,22 @@
       <div id="messages" class="messages" aria-live="polite"></div>
       <form id="composer" class="composer">
         <label class="sr-only" for="message-input">Message Cordia</label>
-        <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?" aria-describedby="composer-help"></textarea>
-        <button type="submit">Send</button>
+        <div class="voice-field composer-field">
+          <textarea id="message-input" rows="3" placeholder="What would you like to accomplish?" aria-describedby="composer-help"></textarea>
+          <button id="message-voice" class="voice-button" type="button" data-voice-target="message-input" aria-label="Speak your message" title="Speak your message">
+            <span class="material-symbols-outlined" aria-hidden="true">mic</span>
+          </button>
+          <span class="voice-status sr-only" aria-live="polite"></span>
+        </div>
+        <button class="composer-send" type="submit">Send</button>
         <small id="composer-help" class="composer-help">Enter to send · Shift + Enter for a new line</small>
       </form>
     </aside>
 
     <section class="workspace">
-      <div class="workspace-heading">
-        <h1 id="workspace-title">Your workspace</h1>
-      </div>
       <div id="notice" class="notice" hidden></div>
       <section id="setup-card" class="setup-card" hidden></section>
-      <section id="selected-applications" class="selected-applications" aria-labelledby="selected-applications-title" hidden></section>
       <section id="artifact-grid" class="artifact-grid" aria-live="polite"></section>
-      <section class="memory-card">
-        <div><small>OPERATOR PROFILE</small><h2>How Cordia understands your communication</h2></div>
-        <details><summary>View saved profile</summary><pre id="operator"></pre></details>
-      </section>
     </section>
   </main>
 
@@ -104,25 +104,6 @@
       <p class="auth-foot">Your preferences. Your tools. One workspace.</p>
     </div>
   </section>
-
-  <dialog id="live-view-permission" class="permission-dialog" aria-labelledby="live-view-title">
-    <form method="dialog" class="dialog-card">
-      <div class="dialog-heading">
-        <img id="live-view-logo" class="dialog-logo" alt="">
-        <div><small>LIVE VIEW ACCESS</small><h2 id="live-view-title">Open Live View</h2></div>
-      </div>
-      <p id="live-view-summary"></p>
-      <div class="permission-columns">
-        <section><strong>Data Cordia will use</strong><ul id="live-view-data"></ul></section>
-        <section><strong>What Cordia can do</strong><ul id="live-view-actions"></ul></section>
-      </div>
-      <p id="live-view-revocation" class="revocation"></p>
-      <div class="dialog-actions">
-        <button type="button" class="quiet-button" data-live-view-cancel>Cancel</button>
-        <button type="button" class="primary-button" data-live-view-confirm>Open Live View</button>
-      </div>
-    </form>
-  </dialog>
 
   <dialog id="workspace-settings" class="settings-dialog" aria-labelledby="workspace-settings-title">
     <div class="dialog-card">

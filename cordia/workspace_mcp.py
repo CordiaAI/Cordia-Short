@@ -13,7 +13,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server import MCPServer
 import httpx2
 
-from .connectors import CONNECTORS, resolve_connector
+from .connectors import public_tool
 
 
 class WorkspaceMCPError(RuntimeError):
@@ -24,14 +24,7 @@ _SERVER_ID = re.compile(r"^[A-Za-z0-9._:/-]{3,200}$")
 
 
 def _public_connector(connector: dict, status: str | None = None) -> dict:
-    return {
-        "id": connector["id"],
-        "name": connector["name"],
-        "aliases": list(connector["aliases"]),
-        "auth_kind": connector["auth"]["kind"],
-        "operations": list(connector["operations"]),
-        "status": status or "not_connected",
-    }
+    return {**connector, "status": status or "not_connected"}
 
 
 def _validate_artifact(payload: dict) -> dict:
@@ -57,9 +50,9 @@ def create_workspace_server(user_id: int, runtime, store) -> MCPServer:
 
     @server.tool(structured_output=True)
     def connectors_search(query: str) -> dict[str, Any]:
-        """Find a supported connector without exposing credentials or server configuration."""
-        connector = resolve_connector(query)
-        return {"connectors": [_public_connector(connector)] if connector else []}
+        """Search the external application catalog without exposing provider credentials."""
+        catalog = runtime.catalog_state(query, 20)
+        return {"status": catalog["status"], "connectors": catalog["applications"]}
 
     @server.tool(structured_output=True)
     def connector_start(connector_id: str) -> dict[str, Any]:
@@ -68,21 +61,15 @@ def create_workspace_server(user_id: int, runtime, store) -> MCPServer:
 
     @server.tool(structured_output=True)
     def connector_status(connector_id: str) -> dict[str, Any]:
-        """Read the verified connection state for a supported connector."""
-        connector = resolve_connector(connector_id)
-        if not connector:
-            raise ValueError(f"connector is not supported: {connector_id}")
-        return {
-            "connector_id": connector["id"],
-            "status": store.connection_status(user_id, connector["id"]) or "not_connected",
-        }
+        """Read the verified connection state for a provider application."""
+        return runtime.connection_status(user_id, connector_id)
 
     @server.tool(structured_output=True)
     def connector_call(
         connector_id: str, operation_id: str, inputs: dict[str, Any]
     ) -> dict[str, Any]:
-        """Run one declared operation on a verified connector."""
-        return {"artifact": runtime.call_operation(user_id, connector_id, operation_id, inputs)}
+        """Run one provider-discovered tool on a verified application."""
+        raise RuntimeError("remote application tools are dispatched by WorkspaceMCPClient")
 
     @server.tool(structured_output=True)
     def artifact_create(payload: dict[str, Any]) -> dict[str, Any]:
@@ -91,22 +78,19 @@ def create_workspace_server(user_id: int, runtime, store) -> MCPServer:
         artifact_id = store.save_artifact(user_id, artifact)
         return {"artifact": {**artifact, "id": artifact_id}}
 
-    @server.resource("cordia://operator")
-    def operator_resource() -> str:
-        """The workspace's current human-readable operator profile."""
-        return store.operator_markdown(user_id)
+    @server.resource("cordia://surveyor")
+    def surveyor_resource() -> str:
+        """The workspace's current human-readable Surveyor profile."""
+        return store.surveyor_markdown(user_id)
 
     @server.resource("cordia://connectors")
     def connectors_resource() -> str:
-        """Supported connectors and this workspace's non-secret connection states."""
-        return json.dumps(
-            [
-                _public_connector(
-                    connector, store.connection_status(user_id, connector["id"])
-                )
-                for connector in CONNECTORS.values()
-            ]
-        )
+        """Runtime-discovered applications and this workspace's non-secret states."""
+        catalog = runtime.catalog_state("", 100)
+        return json.dumps([
+            _public_connector(item, store.connection_status(user_id, item["id"]))
+            for item in catalog["applications"]
+        ])
 
     @server.resource("cordia://artifacts")
     def artifacts_resource() -> str:
@@ -117,6 +101,8 @@ def create_workspace_server(user_id: int, runtime, store) -> MCPServer:
 
 
 class WorkspaceMCPClient:
+    APPLICATION_DISCOVERY_RETRY_DELAYS = (0.5, 1.5, 3.0)
+
     def __init__(
         self,
         runtime,
@@ -129,6 +115,27 @@ class WorkspaceMCPClient:
         self.registry_base_url = registry_base_url.rstrip("/")
 
     def call(self, user_id: int, tool_name: str, arguments: dict) -> dict:
+        if tool_name == "connectors_search":
+            catalog = self.runtime.catalog_state(str(arguments.get("query", "")), 20)
+            return {"status": catalog["status"], "connectors": catalog["applications"]}
+        if tool_name == "connector_start":
+            return self.runtime.start_connection(user_id, str(arguments.get("connector_id", "")))
+        if tool_name == "connector_status":
+            return self.runtime.connection_status(user_id, str(arguments.get("connector_id", "")))
+        if tool_name == "connector_tools":
+            return {"tools": self.discover_application(user_id, str(arguments.get("connector_id", "")))}
+        if tool_name == "connector_call":
+            return self.call_application_tool(
+                user_id,
+                str(arguments.get("connector_id", "")),
+                str(arguments.get("operation_id") or arguments.get("tool_id") or ""),
+                arguments.get("inputs") or {},
+            )
+        if tool_name == "artifact_create":
+            artifact = _validate_artifact(arguments.get("payload"))
+            artifact_id = self.store.save_artifact(user_id, artifact)
+            return {"artifact": {**artifact, "id": artifact_id}}
+
         async def invoke() -> dict:
             server = create_workspace_server(user_id, self.runtime, self.store)
             async with Client(server) as client:
@@ -148,6 +155,104 @@ class WorkspaceMCPClient:
             raise
         except Exception as exc:
             raise WorkspaceMCPError("workspace tool unavailable") from exc
+
+    @asynccontextmanager
+    async def _application_client(self, user_id: int, connector_id: str):
+        try:
+            config = self.runtime.mcp_configuration(user_id, connector_id)
+            async with httpx2.AsyncClient(headers=config["headers"], timeout=30) as http_client:
+                transport = streamable_http_client(config["endpoint"], http_client=http_client)
+                async with Client(transport) as client:
+                    yield client, config["application"]
+        except WorkspaceMCPError:
+            raise
+        except Exception as exc:
+            raise WorkspaceMCPError("application tool runtime unavailable") from exc
+
+    def discover_application(self, user_id: int, connector_id: str) -> list[dict]:
+        async def discover() -> list[dict]:
+            delays = (0, *self.APPLICATION_DISCOVERY_RETRY_DELAYS)
+            for attempt, delay in enumerate(delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with self._application_client(user_id, connector_id) as (client, _application):
+                        result = await client.list_tools()
+                    break
+                except Exception:
+                    if attempt == len(delays) - 1:
+                        raise
+            return [
+                public_tool({
+                    "name": item.name,
+                    "title": item.title,
+                    "description": item.description,
+                    "inputSchema": item.input_schema,
+                    "annotations": item.annotations.model_dump(mode="json") if item.annotations else {},
+                })
+                for item in result.tools
+            ]
+
+        try:
+            return asyncio.run(discover())
+        except WorkspaceMCPError:
+            raise
+        except Exception as exc:
+            raise WorkspaceMCPError("application tool discovery failed") from exc
+
+    def call_application_tool(
+        self, user_id: int, connector_id: str, tool_id: str, arguments: dict
+    ) -> dict:
+        if not tool_id:
+            raise WorkspaceMCPError("application tool id is required")
+
+        async def invoke() -> tuple[dict, dict]:
+            async with self._application_client(user_id, connector_id) as (client, application):
+                result = await client.call_tool(tool_id, arguments)
+            if result.is_error:
+                raise WorkspaceMCPError("application tool returned an error")
+            structured = self._application_result(result)
+            return structured, application
+
+        try:
+            structured, application = asyncio.run(invoke())
+        except WorkspaceMCPError:
+            raise
+        except Exception as exc:
+            raise WorkspaceMCPError("application tool call failed") from exc
+        artifact = self._artifact(
+            {"title": application["name"], "server_id": application["id"]},
+            tool_id,
+            structured,
+        )
+        artifact["source"] = application["id"]
+        artifact_id = self.store.save_artifact(user_id, artifact)
+        return {"result": structured, "artifact": {**artifact, "id": artifact_id}}
+
+    @staticmethod
+    def _application_result(result) -> dict:
+        structured = result.structured_content
+        if isinstance(structured, dict):
+            return structured
+        texts = [getattr(item, "text", "") for item in result.content]
+        if len(texts) != 1:
+            return {"content": texts}
+        try:
+            parsed = json.loads(texts[0])
+        except (TypeError, json.JSONDecodeError):
+            return {"content": texts}
+        if isinstance(parsed, dict):
+            provider_result = parsed.get("ret")
+            if isinstance(provider_result, dict):
+                return {
+                    key: value
+                    for key, value in provider_result.items()
+                    if key != "authContext"
+                }
+            return parsed
+        if isinstance(parsed, list):
+            return {"items": parsed}
+        return {"result": parsed}
 
     @staticmethod
     def _remote_definition(definition: dict) -> dict:
@@ -380,6 +485,10 @@ class WorkspaceMCPClient:
 
     @staticmethod
     def _artifact(server: dict, tool_name: str, result: dict) -> dict:
+        if len(result) == 1:
+            only_value = next(iter(result.values()))
+            if isinstance(only_value, dict):
+                result = only_value
         collection = next(
             (value for value in result.values() if isinstance(value, list)), None
         )

@@ -5,8 +5,10 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from mcp import Client
@@ -37,6 +39,13 @@ class WorkspaceMCPTests(unittest.TestCase):
             {"access_token": "never-expose-this-token"},
         )
         self.runtime = ConnectorRuntime(self.store, env={})
+        self.runtime.catalog_state = lambda query="", limit=100: {
+            "status": "ready",
+            "applications": [{
+                "id": "google_drive", "name": "Google Drive", "logo": "",
+                "description": "Fixture", "categories": [], "auth_kind": "managed",
+            }] if not query or "drive" in query.lower() else [],
+        }
 
     def tearDown(self):
         self.temp.cleanup()
@@ -77,7 +86,7 @@ class WorkspaceMCPTests(unittest.TestCase):
         async def exercise():
             server = create_workspace_server(self.user_id, self.runtime, self.store)
             async with Client(server) as client:
-                operator = (await client.read_resource("cordia://operator")).contents[0].text
+                operator = (await client.read_resource("cordia://surveyor")).contents[0].text
                 connectors = (await client.read_resource("cordia://connectors")).contents[0].text
                 artifacts = (await client.read_resource("cordia://artifacts")).contents[0].text
                 self.assertIn("Jordan", operator)
@@ -102,6 +111,88 @@ class WorkspaceMCPTests(unittest.TestCase):
 
         self.assertEqual("Plan.md", result["artifact"]["rows"][0][0])
         self.assertEqual(result["artifact"]["id"], self.store.artifacts(self.user_id)[0]["id"])
+
+    def test_application_discovery_retries_while_new_oauth_account_becomes_ready(self):
+        client = WorkspaceMCPClient(self.runtime, self.store)
+        attempts = 0
+
+        class ProviderClient:
+            async def list_tools(self):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("account is not ready")
+                return SimpleNamespace(
+                    tools=[
+                        SimpleNamespace(
+                            name="app_alpha-list-items",
+                            title="List items",
+                            description="List provider items.",
+                            input_schema={"type": "object", "properties": {}},
+                            annotations=None,
+                        )
+                    ]
+                )
+
+        @asynccontextmanager
+        async def application_client(_user_id, _connector_id):
+            yield ProviderClient(), {"id": "app_alpha", "name": "App Alpha"}
+
+        client._application_client = application_client
+        client.APPLICATION_DISCOVERY_RETRY_DELAYS = (0,)
+
+        tools = client.discover_application(self.user_id, "app_alpha")
+
+        self.assertEqual("app_alpha-list-items", tools[0]["id"])
+        self.assertEqual(2, attempts)
+
+    def test_text_json_provider_result_is_unwrapped_into_a_readable_artifact(self):
+        client = WorkspaceMCPClient(self.runtime, self.store)
+
+        class ProviderClient:
+            async def call_tool(self, _tool_id, _arguments):
+                return SimpleNamespace(
+                    is_error=False,
+                    structured_content=None,
+                    content=[
+                        SimpleNamespace(
+                            text=json.dumps(
+                                {
+                                    "os": [],
+                                    "ret": {
+                                        "authContext": {
+                                            "scopes": ["users:read", "chat:write"]
+                                        },
+                                        "user": {
+                                            "name": "Jordan",
+                                            "timezone": "Central",
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                    ],
+                )
+
+        @asynccontextmanager
+        async def application_client(_user_id, _connector_id):
+            yield ProviderClient(), {"id": "app_alpha", "name": "App Alpha"}
+
+        client._application_client = application_client
+
+        called = client.call_application_tool(
+            self.user_id, "app_alpha", "app_alpha-get-current-user", {}
+        )
+
+        self.assertEqual(
+            {"user": {"name": "Jordan", "timezone": "Central"}},
+            called["result"],
+        )
+        self.assertEqual(
+            [["name", "Jordan"], ["timezone", "Central"]],
+            called["artifact"]["rows"],
+        )
+        self.assertNotIn("authContext", json.dumps(called))
 
     def test_generic_remote_server_is_discovered_called_and_saved_as_an_artifact(self):
         remote = MCPServer("Example Work Server")

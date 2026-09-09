@@ -6,6 +6,12 @@ Surveyor is the workspace specification, not a prelude to another setup wizard. 
 
 The workspace is a Cordia-owned artifact dashboard. Connector windows are readable projections of provider data, not embedded copies of provider applications. Buttons in those windows invoke reusable Cordia actions through the same agent and connector runtime.
 
+## Workspace presentation
+
+The desktop workspace keeps Cordia chat in a narrow left rail and uses the remaining surface for a dense responsive grid of square artifact windows. The main workspace does not repeat selected applications or expose the operator profile as separate cards; both remain internal context. It also does not use a large page title that displaces the working windows.
+
+Every connector artifact resolves its application name and logo from universal catalog metadata. Its body shows a bounded human-readable view, followed by task buttons derived from saved artifact actions or the user's Surveyor request, plus one application-scoped Cordia input. Refresh and hide are generic window controls. A microphone button is progressively available in Surveyor text fields, the primary Cordia composer, and each artifact composer. The browser performs speech recognition and Cordia stores only the resulting text; unsupported browsers retain ordinary typing without a second speech backend in this beta.
+
 ## Markdown build contract
 
 The build is driven by three Markdown documents, not a second planner or workspace index:
