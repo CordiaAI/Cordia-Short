@@ -155,6 +155,39 @@ class ConnectorRuntime:
         base = self.env.get("CORDIA_BASE_URL", "http://127.0.0.1:5050").rstrip("/")
         return base + "/api/connectors/oauth/callback?" + urllib.parse.urlencode({"state": state})
 
+    def _provider_account(self, user_id: int, connector_id: str) -> dict | None:
+        try:
+            response = self.transport(
+                "GET",
+                f"{self.API_BASE}/connect/{self.env['PIPEDREAM_PROJECT_ID']}/accounts",
+                self._headers(),
+                {"external_user_id": self.external_user_id(user_id), "app": connector_id},
+                30,
+            )
+        except Exception as exc:
+            raise ConnectorError("connector verification failed") from exc
+        accounts = self._items(response, "data") or self._items(response, "accounts")
+        return next(
+            (
+                item
+                for item in accounts
+                if not item.get("dead")
+                and item.get("healthy") is not False
+                and str((item.get("app") or {}).get("name_slug") or item.get("app") or connector_id)
+                == connector_id
+                and item.get("id")
+            ),
+            None,
+        )
+
+    def _save_provider_account(self, user_id: int, connector_id: str, account: dict) -> None:
+        self.store.save_connection(
+            user_id,
+            connector_id,
+            "verified",
+            {"account_id": str(account["id"])},
+        )
+
     def start_connection(
         self, user_id: int, connector_id: str, requested_scopes: list[str] | None = None
     ) -> dict:
@@ -169,6 +202,16 @@ class ConnectorRuntime:
                 "message": "Universal connector provider configuration missing: " + ", ".join(missing),
             }
         application = self.application(connector_id)
+        account = self._provider_account(user_id, application["id"])
+        if account:
+            self._save_provider_account(user_id, application["id"], account)
+            return {
+                "type": "connector_status",
+                "connector_id": application["id"],
+                "title": f"{application['name']} connected",
+                "status": "verified",
+                "message": "This application is already connected.",
+            }
         state = self.store.create_oauth_state(user_id, application["id"])
         payload = {
             "external_user_id": self.external_user_id(user_id),
@@ -205,45 +248,31 @@ class ConnectorRuntime:
         if not state or not self.store.consume_oauth_state(user_id, connector_id, state):
             raise ConnectorError("authorization state is invalid, expired, owned by another user, or already used")
         try:
-            response = self.transport(
-                "GET",
-                f"{self.API_BASE}/connect/{self.env['PIPEDREAM_PROJECT_ID']}/accounts",
-                self._headers(),
-                {"external_user_id": self.external_user_id(user_id), "app": connector_id},
-                30,
-            )
-        except Exception as exc:
+            account = self._provider_account(user_id, connector_id)
+        except ConnectorError:
             self.store.save_connection(user_id, connector_id, "needs_attention")
-            raise ConnectorError("connector verification failed") from exc
-        accounts = self._items(response, "data") or self._items(response, "accounts")
-        account = next(
-            (
-                item
-                for item in accounts
-                if not item.get("dead")
-                and str((item.get("app") or {}).get("name_slug") or item.get("app") or connector_id)
-                == connector_id
-            ),
-            None,
-        )
-        if not account or not account.get("id"):
+            raise
+        if not account:
             self.store.save_connection(user_id, connector_id, "needs_attention")
             raise ConnectorError("connector verification failed")
-        self.store.save_connection(
-            user_id,
-            connector_id,
-            "verified",
-            {"account_id": str(account["id"])},
-        )
+        self._save_provider_account(user_id, connector_id, account)
         return {"connector_id": connector_id, "status": "verified"}
 
     def connection_status(self, user_id: int, connector_id: str) -> dict:
         application = self.application(connector_id)
+        status = self.store.connection_status(user_id, application["id"]) or "not_connected"
+        if status != "verified" and not self.missing_configuration():
+            try:
+                account = self._provider_account(user_id, application["id"])
+            except ConnectorError:
+                account = None
+            if account:
+                self._save_provider_account(user_id, application["id"], account)
+                status = "verified"
         return {
             "connector_id": application["id"],
             "name": application["name"],
-            "status": self.store.connection_status(user_id, application["id"])
-            or "not_connected",
+            "status": status,
         }
 
     def mcp_configuration(self, user_id: int, connector_id: str) -> dict:

@@ -52,6 +52,15 @@ class DynamicWorkspace:
         raise AssertionError(tool_name)
 
 
+class ReconciledWorkspace(DynamicWorkspace):
+    def call(self, user_id, tool_name, arguments):
+        if tool_name == "connector_status":
+            self.calls.append((tool_name, arguments))
+            self.store.save_connection(user_id, "app_alpha", "verified", {"account_id": "existing-account"})
+            return {"connector_id": "app_alpha", "status": "verified"}
+        return super().call(user_id, tool_name, arguments)
+
+
 class UniversalAgentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -65,6 +74,21 @@ class UniversalAgentTests(unittest.TestCase):
         model = ScriptedModel(replies=replies)
         agent = Agent("fixture-key", "fixture-model", chat_model=model)
         return AgentRuns(self.store, workspace, lambda _user: agent)
+
+    def test_existing_provider_account_is_reconciled_without_opening_authorization(self):
+        with self.store._connection() as db:
+            db.execute("DELETE FROM connections WHERE user_id=? AND connector_id='app_alpha'", (self.user,))
+        workspace = ReconciledWorkspace(self.store, read_only=True)
+        service = self.service(workspace, [
+            call("connect_service", connector_id="app_alpha"),
+            AIMessage(content="Connected Team Chat Alpha."),
+        ])
+
+        result = service.start(self.user, "Connect Team Chat Alpha")
+
+        self.assertEqual("completed", result["run"]["status"])
+        self.assertEqual("verified", self.store.connection_status(self.user, "app_alpha"))
+        self.assertFalse(any(name == "connector_start" for name, _ in workspace.calls))
 
     def test_read_only_discovered_tool_executes_without_static_operation_mapping(self):
         workspace = DynamicWorkspace(

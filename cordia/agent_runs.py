@@ -429,6 +429,14 @@ class AgentRuns:
 
         def authorize(connector_id):
             if self.store.connection_status(user_id, connector_id) != "verified":
+                status = self.workspace.call(
+                    user_id, "connector_status", {"connector_id": connector_id}
+                )
+                if (
+                    status.get("status") == "verified"
+                    and self.store.connection_status(user_id, connector_id) == "verified"
+                ):
+                    return
                 interrupt({"connector_id": connector_id, "status": "authorization_required"})
                 if self.store.connection_status(user_id, connector_id) != "verified":
                     raise InvalidAgentAction("connector is not verified")
@@ -648,6 +656,9 @@ class AgentRuns:
                 card = self.store.setup_card(user_id)
                 if not card or card.get("connector_id") != connector_id or card.get("status") == "needs_configuration":
                     card = self.workspace.call(user_id, "connector_start", {"connector_id": connector_id})
+                    if card.get("status") == "verified":
+                        self.store.clear_setup_card(user_id)
+                        return self.resume(user_id, connector_id, run_id=run_id, locked=True)
                     self.store.save_setup_card(user_id, card)
                 if card.get("status") == "needs_configuration":
                     return self._finish(user_id, run_id, "needs_configuration", "- This service needs server configuration before authorization can begin. See the setup card.")

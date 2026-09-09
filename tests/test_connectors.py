@@ -79,6 +79,7 @@ class UniversalConnectorRuntimeTests(unittest.TestCase):
         self.store = Store(root / "cordia.db", root / "workspaces")
         self.user_id = self.store.register("person@example.com", "correct horse battery")
         self.calls = []
+        self.provider_accounts = []
         self.env = {
             "PIPEDREAM_CLIENT_ID": "provider-client",
             "PIPEDREAM_CLIENT_SECRET": "provider-secret",
@@ -106,7 +107,7 @@ class UniversalConnectorRuntimeTests(unittest.TestCase):
         if url.endswith("/connect/project-123/tokens"):
             return {"connect_link_url": "https://connect.example.test/session-token"}
         if url.endswith("/connect/project-123/accounts"):
-            return {"data": [{"id": "account-456", "dead": False, "app": {"name_slug": data["app"]}}]}
+            return {"data": self.provider_accounts}
         raise AssertionError(f"unexpected request: {method} {url}")
 
     def runtime(self, env=None):
@@ -138,9 +139,27 @@ class UniversalConnectorRuntimeTests(unittest.TestCase):
         self.assertIn("state=", token_call["data"]["success_redirect_uri"])
         self.assertNotIn("provider-secret", json.dumps(setup))
 
+    def test_start_connection_recovers_existing_healthy_provider_account_without_oauth(self):
+        self.provider_accounts = [
+            {"id": "account-existing", "dead": False, "healthy": True, "app": {"name_slug": "app_alpha"}}
+        ]
+
+        result = self.runtime().start_connection(self.user_id, "app_alpha")
+
+        self.assertEqual("verified", result["status"])
+        self.assertEqual("verified", self.store.connection_status(self.user_id, "app_alpha"))
+        self.assertEqual(
+            {"account_id": "account-existing"},
+            self.store.connection_credentials(self.user_id, "app_alpha"),
+        )
+        self.assertFalse(any(call["url"].endswith("/tokens") for call in self.calls))
+
     def test_callback_verifies_provider_account_and_persists_only_account_identity(self):
         runtime = self.runtime()
         setup = runtime.start_connection(self.user_id, "app_beta")
+        self.provider_accounts = [
+            {"id": "account-456", "dead": False, "healthy": True, "app": {"name_slug": "app_beta"}}
+        ]
 
         result = runtime.finish_connection(self.user_id, "app_beta", {"state": setup["state"]})
 
