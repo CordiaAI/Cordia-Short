@@ -1,18 +1,27 @@
 import unittest
 
-from cordia.connectors import CONNECTORS
 from cordia.onboarding import normalize_applications, score_profile
 from cordia.survey_results import build_survey_results
 from tests.test_survey import valid_stages
 
 
 class SurveyResultsTests(unittest.TestCase):
+    CATALOG = {
+        "google_drive": {
+            "id": "google_drive",
+            "name": "Google Drive",
+            "aliases": [],
+            "logo": "",
+            "auth_kind": "oauth2",
+        }
+    }
+
     def results(self, mutate=None):
         stages = valid_stages()
         if mutate:
             mutate(stages["workspace_discovery"]["answers"])
         discovery = stages["workspace_discovery"]["answers"]
-        applications = normalize_applications(discovery["applications"], CONNECTORS, {})
+        applications = normalize_applications(discovery["applications"], self.CATALOG, {})
         return build_survey_results(stages, score_profile(stages), applications)
 
     def test_plot_uses_only_documented_structured_scores(self):
