@@ -123,7 +123,7 @@ class SurveyResultsTests(unittest.TestCase):
 
 - [ ] **Step 2: Run the focused test and verify the module is missing**
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results -v`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'cordia.survey_results'`.
 
@@ -249,7 +249,7 @@ Do not classify the meaning of `outcome`, `current_workflow`, prompt examples, o
 
 - [ ] **Step 6: Run the focused derivation tests**
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results -v`
 
 Expected: all `SurveyResultsTests` pass.
 
@@ -307,7 +307,7 @@ Update the pre-existing completion test so it explicitly sets `COMING_SOON_AFTER
 
 - [ ] **Step 2: Run the three focused Flask tests and verify failure**
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_app.CordiaAppTests.test_completed_survey_returns_persistent_results_state tests.test_app.CordiaAppTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.CordiaAppTests.test_feature_flag_false_preserves_workspace_contract -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_app.ApplicationJourneyTests.test_completed_survey_returns_persistent_results_state tests.test_app.ApplicationJourneyTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.ApplicationJourneyTests.test_feature_flag_false_preserves_workspace_contract -v`
 
 Expected: results-state assertions fail because completed users still receive `workspace` and completion still calls `connector_start`.
 
@@ -353,7 +353,7 @@ In `onboarding_complete()`, call `prepare_selected_setup(user_id)` only when `CO
 
 - [ ] **Step 4: Run focused Flask and derivation tests**
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.CordiaAppTests.test_completed_survey_returns_persistent_results_state tests.test_app.CordiaAppTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.CordiaAppTests.test_feature_flag_false_preserves_workspace_contract tests.test_app.CordiaAppTests.test_onboarding_completion_creates_workspace_and_provides_all_context_to_agent -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.ApplicationJourneyTests.test_completed_survey_returns_persistent_results_state tests.test_app.ApplicationJourneyTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.ApplicationJourneyTests.test_feature_flag_false_preserves_workspace_contract tests.test_app.ApplicationJourneyTests.test_onboarding_completion_creates_workspace_and_provides_all_context_to_agent -v`
 
 Expected: all selected tests pass, including the existing workspace contract under the disabled flag.
 
@@ -513,7 +513,7 @@ Run: `node --test tests/survey_results_ui.test.cjs`
 
 Expected: PASS.
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.CordiaAppTests.test_completed_survey_returns_persistent_results_state tests.test_app.CordiaAppTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.CordiaAppTests.test_feature_flag_false_preserves_workspace_contract -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.ApplicationJourneyTests.test_completed_survey_returns_persistent_results_state tests.test_app.ApplicationJourneyTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.ApplicationJourneyTests.test_feature_flag_false_preserves_workspace_contract -v`
 
 Expected: all selected tests pass.
 
@@ -545,7 +545,7 @@ git commit -m "feat: show Cordia profile after Surveyor"
 
 - [ ] **Step 1: Run the complete focused feature set**
 
-Run: `..\..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.CordiaAppTests.test_completed_survey_returns_persistent_results_state tests.test_app.CordiaAppTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.CordiaAppTests.test_feature_flag_false_preserves_workspace_contract tests.test_app.CordiaAppTests.test_onboarding_completion_creates_workspace_and_provides_all_context_to_agent -v`
+Run: `..\..\.venv\Scripts\python.exe -m unittest tests.test_survey_results tests.test_app.ApplicationJourneyTests.test_completed_survey_returns_persistent_results_state tests.test_app.ApplicationJourneyTests.test_results_mode_does_not_prepare_connector_setup tests.test_app.ApplicationJourneyTests.test_feature_flag_false_preserves_workspace_contract tests.test_app.ApplicationJourneyTests.test_onboarding_completion_creates_workspace_and_provides_all_context_to_agent -v`
 
 Expected: all selected Python tests pass.
 
