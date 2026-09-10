@@ -381,17 +381,29 @@ function render(state, transient = {}) {
   const signedOut = state.state === "signed_out";
   const isOnboarding = state.state === "onboarding";
   document.querySelector(".topbar").hidden = isOnboarding;
-  byId("auth-panel").hidden = !signedOut;
-  byId("app-shell").hidden = signedOut || isOnboarding;
   byId("account").hidden = signedOut || isOnboarding;
   const agentRuntime = state.agent_runtime;
   byId("status-pill").textContent = signedOut
     ? "Signed out"
     : isOnboarding
       ? "Surveyor"
+      : state.state === "results"
+        ? "Profile saved"
       : agentRuntime
         ? `Agent online · ${agentRuntime.provider} · ${agentRuntime.model}`
         : "Agent online";
+  if (window.CordiaSurveyResults.activate({
+    auth: byId("auth-panel"),
+    onboarding: byId("onboarding"),
+    workspace: byId("app-shell"),
+    results: byId("survey-results"),
+  }, state)) {
+    onboardingController.hide();
+    return;
+  }
+  byId("survey-results").hidden = true;
+  byId("auth-panel").hidden = !signedOut;
+  byId("app-shell").hidden = signedOut || isOnboarding;
   if (signedOut) { onboardingController.hide(); return; }
   if (isOnboarding) {
     onboardingController.show(state.onboarding).catch((error) => { byId("onboarding-error").textContent = error.message; });
