@@ -85,12 +85,27 @@ function resultsFixture() {
   return {
     status: { label: "Workspace coming soon", detail: "Saved." },
     plot: {
-      delegation: { score: 67, label: "Perform approved actions" },
-      context: { score: 100, label: "Implicit / high-context" },
-      breadth: { score: 40, label: "Connected workflow" },
+      x: {
+        title: "Execution autonomy",
+        score: 54,
+        label: "Shared execution",
+        references: [{ title: "Requested control", score: 33, weight: 2 }],
+      },
+      y: {
+        title: "Communication context",
+        score: 75,
+        label: "High-context collaboration",
+        references: [{ title: "Context preference", score: 100, weight: 2 }],
+      },
+      z: {
+        title: "Workflow complexity",
+        score: 48,
+        label: "Connected workflow",
+        references: [{ title: "Workflow breadth", score: 20, weight: 2 }],
+      },
     },
     direct_findings: [
-      { title: "Outcome", statement: "<img src=x>", detail: "User supplied." },
+      { title: "Outcome", statement: "<img src=x>", detail: "User supplied.", plot_axis: "z" },
     ],
     connector_plans: [
       {
@@ -136,6 +151,9 @@ test("survey results render bounded sections without HTML interpolation", () => 
   assert.equal(root.querySelector("img"), null);
   assert.equal(root.querySelectorAll("canvas").length, 1);
   assert.equal(root.querySelectorAll("dl").length, 1);
+  assert.match(root.textContent, /X · Execution autonomy/);
+  assert.match(root.textContent, /Requested control · 33\/100 · 2× weight/);
+  assert.match(root.textContent, /Z reference/);
 });
 
 

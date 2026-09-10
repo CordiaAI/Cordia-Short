@@ -108,7 +108,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
     def test_workspace_shell_matches_the_approved_navigation_contract(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="back-to-cordia"', html)
+        self.assertNotIn('id="back-to-cordia"', html)
         self.assertIn('id="account-menu-button"', html)
         self.assertIn('id="account-menu"', html)
         self.assertIn('id="workspace-settings"', html)

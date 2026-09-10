@@ -37,6 +37,19 @@ AXIS_TITLES = {
     "directness": "Directness preference",
     "implementation": "Implementation preference",
 }
+PLOT_AXIS_FOR_OPERATOR = {
+    "context": "y",
+    "scope": "z",
+    "directness": "y",
+    "implementation": "x",
+}
+PLOT_AXIS_FOR_TRAIT = {
+    "social_energy": "y",
+    "interpersonal_sensitivity": "y",
+    "order_follow_through": "x",
+    "emotional_reactivity": "y",
+    "imagination_abstraction": "z",
+}
 
 
 def _present(value) -> bool:
@@ -84,6 +97,56 @@ def breadth_score(discovery: dict, applications: list[dict]) -> dict:
     return {"score": score, "label": label}
 
 
+def _operator_score(value: int) -> int:
+    return {-1: 0, 0: 50, 1: 100}[value]
+
+
+def _axis(title: str, references: list[dict], labels: tuple[str, str, str]) -> dict:
+    weight = sum(reference["weight"] for reference in references)
+    score = round(sum(reference["score"] * reference["weight"] for reference in references) / weight)
+    label = labels[0] if score < 40 else labels[1] if score < 70 else labels[2]
+    return {"title": title, "score": score, "label": label, "references": references}
+
+
+def plot_profile(discovery: dict, profile: dict, applications: list[dict]) -> dict:
+    """Build explainable coordinates from normalized, structured Surveyor scores."""
+    controls = delegation_score(discovery, applications)["score"]
+    breadth = breadth_score(discovery, applications)["score"]
+    axes = profile["operator_axes"]
+    traits = profile["traits"]
+    return {
+        "x": _axis(
+            "Execution autonomy",
+            [
+                {"title": "Requested control", "score": controls, "weight": 2},
+                {"title": "Implementation preference", "score": _operator_score(axes["implementation"]), "weight": 1},
+                {"title": "Order and follow-through", "score": round(traits["order_follow_through"] * 10), "weight": 1},
+            ],
+            ("Guided support", "Shared execution", "Agent-led execution"),
+        ),
+        "y": _axis(
+            "Communication context",
+            [
+                {"title": "Context preference", "score": _operator_score(axes["context"]), "weight": 2},
+                {"title": "Directness preference", "score": _operator_score(axes["directness"]), "weight": 1},
+                {"title": "Social energy", "score": round(traits["social_energy"] * 10), "weight": 1},
+                {"title": "Interpersonal sensitivity", "score": round(traits["interpersonal_sensitivity"] * 10), "weight": 1},
+                {"title": "Emotional steadiness", "score": round((10 - traits["emotional_reactivity"]) * 10), "weight": 1},
+            ],
+            ("Literal communication", "Balanced collaboration", "High-context collaboration"),
+        ),
+        "z": _axis(
+            "Workflow complexity",
+            [
+                {"title": "Workflow breadth", "score": breadth, "weight": 2},
+                {"title": "Scope preference", "score": _operator_score(axes["scope"]), "weight": 1},
+                {"title": "Imagination and abstraction", "score": round(traits["imagination_abstraction"] * 10), "weight": 1},
+            ],
+            ("Focused task", "Connected workflow", "Systems orchestration"),
+        ),
+    }
+
+
 def _direct_findings(discovery: dict, profile: dict) -> list[dict]:
     findings = []
     for axis in ("context", "scope", "directness", "implementation"):
@@ -93,6 +156,8 @@ def _direct_findings(discovery: dict, profile: dict) -> list[dict]:
                 "title": AXIS_TITLES[axis],
                 "statement": AXIS_LABELS[axis][value],
                 "detail": AXIS_GUIDANCE[axis][value],
+                "plot_axis": PLOT_AXIS_FOR_OPERATOR[axis],
+                "plot_role": "scored",
             }
         )
     for trait, score in profile["traits"].items():
@@ -101,6 +166,8 @@ def _direct_findings(discovery: dict, profile: dict) -> list[dict]:
                 "title": trait.replace("_", " ").capitalize(),
                 "statement": f"{score:.1f}/10",
                 "detail": "Survey-derived description, not a diagnosis.",
+                "plot_axis": PLOT_AXIS_FOR_TRAIT[trait],
+                "plot_role": "scored",
             }
         )
     for domain in profile["domains"]:
@@ -109,16 +176,25 @@ def _direct_findings(discovery: dict, profile: dict) -> list[dict]:
                 "title": domain["label"],
                 "statement": f"Self-rating {domain['rating']}/5",
                 "detail": domain["expertise_confidence"],
+                "plot_axis": "y",
+                "plot_role": "reference",
             }
         )
     for title, field in WORKFLOW_FIELDS:
         if _present(discovery.get(field)):
-            findings.append({"title": title, "statement": discovery[field]})
+            findings.append({
+                "title": title,
+                "statement": discovery[field],
+                "plot_axis": "x" if field == "approval_boundaries" else "z",
+                "plot_role": "reference",
+            })
     findings.append(
         {
             "title": "Requested control",
             "statement": CONTROL_LEVEL_LABELS[discovery["control_level"]],
             "detail": "This is a preference, not authorization already granted.",
+            "plot_axis": "x",
+            "plot_role": "scored",
         }
     )
     return findings
@@ -335,11 +411,7 @@ def build_survey_results(
             "label": "Workspace coming soon",
             "detail": "Your profile and workspace plan are saved.",
         },
-        "plot": {
-            "delegation": delegation_score(discovery, applications),
-            "context": context_score(profile),
-            "breadth": breadth_score(discovery, applications),
-        },
+        "plot": plot_profile(discovery, profile, applications),
         "direct_findings": _direct_findings(discovery, profile),
         "connector_plans": [_connector_plan(application) for application in applications],
         "indirect_findings": _indirect_findings(discovery, profile, applications),

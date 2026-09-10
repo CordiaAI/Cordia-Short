@@ -22,9 +22,9 @@
     const context = canvas.getContext("2d");
     if (!context) return;
     const origin = { x: 74, y: 244 };
-    const x = origin.x + (plot.delegation.score / 100) * 330;
-    const y = origin.y - (plot.context.score / 100) * 175;
-    const zOffset = (plot.breadth.score / 100) * 54;
+    const x = origin.x + (plot.x.score / 100) * 330;
+    const y = origin.y - (plot.y.score / 100) * 175;
+    const zOffset = (plot.z.score / 100) * 54;
     const point = { x: x + zOffset, y: y - zOffset * 0.55 };
 
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -33,9 +33,9 @@
     context.lineWidth = 1.5;
     context.font = "12px Inter, sans-serif";
     const axes = [
-      { x: 438, y: 244, label: "Delegation" },
-      { x: 74, y: 42, label: "Context" },
-      { x: 142, y: 205, label: "Breadth" },
+      { x: 438, y: 244, label: "X · Execution" },
+      { x: 74, y: 42, label: "Y · Context" },
+      { x: 142, y: 205, label: "Z · Complexity" },
     ];
     for (const axis of axes) {
       context.beginPath();
@@ -51,7 +51,7 @@
   }
 
   function renderPlot(plot) {
-    const container = card("Your AI working style", "results-plot-card");
+    const container = card("Your AI working style", "results-plot-card results-span-2");
     if (!plot) {
       container.append(element("p", "results-muted", "The plot could not be displayed safely."));
       return container;
@@ -62,28 +62,51 @@
     canvas.setAttribute("role", "img");
     canvas.setAttribute(
       "aria-label",
-      `Delegation ${plot.delegation.score} of 100, context ${plot.context.score} of 100, workflow breadth ${plot.breadth.score} of 100.`,
+      `Execution autonomy ${plot.x.score} of 100, communication context ${plot.y.score} of 100, workflow complexity ${plot.z.score} of 100.`,
     );
     drawPlot(canvas, plot);
     container.append(canvas);
 
     const coordinates = element("dl", "results-coordinate-list");
-    definition(coordinates, "Delegation", `${plot.delegation.score}/100 · ${plot.delegation.label}`);
-    definition(coordinates, "Context", `${plot.context.score}/100 · ${plot.context.label}`);
-    definition(coordinates, "Workflow breadth", `${plot.breadth.score}/100 · ${plot.breadth.label}`);
-    container.append(coordinates);
+    for (const key of ["x", "y", "z"]) {
+      const axis = plot[key];
+      definition(coordinates, `${key.toUpperCase()} · ${axis.title}`, `${axis.score}/100 · ${axis.label}`);
+    }
+    const references = element("div", "results-axis-references");
+    for (const key of ["x", "y", "z"]) {
+      const axis = plot[key];
+      const group = element("section", "results-axis-reference");
+      group.append(element("h3", "", `${key.toUpperCase()} score inputs`));
+      for (const reference of axis.references || []) {
+        group.append(element(
+          "p",
+          "",
+          `${reference.title} · ${reference.score}/100 · ${reference.weight}× weight`,
+        ));
+      }
+      references.append(group);
+    }
+    container.append(coordinates, references);
     return container;
   }
 
   function renderDirectFindings(findings) {
-    const container = card("What your answers say");
+    const container = card("What your answers say", "results-answers-card");
     const list = element("ul", "results-finding-list");
     for (const finding of findings || []) {
       const item = element("li", "results-finding");
-      item.append(
+      const heading = element("div", "results-finding-heading");
+      heading.append(
         element("strong", "", finding.title),
-        element("p", "", finding.statement),
+        finding.plot_axis
+          ? element(
+              "span",
+              "results-axis-chip",
+              `${finding.plot_axis.toUpperCase()} ${finding.plot_role === "scored" ? "score" : "reference"}`,
+            )
+          : element("span"),
       );
+      item.append(heading, element("p", "", finding.statement));
       if (finding.detail) {
         const details = element("details", "results-details");
         details.append(
@@ -106,7 +129,7 @@
   }
 
   function renderConnectors(connectors) {
-    const container = card("Your application plan", "results-wide");
+    const container = card("Your application plan", "results-connectors-card results-span-2");
     const intro = element(
       "p",
       "results-muted",
@@ -137,7 +160,7 @@
   }
 
   function renderInferences(findings) {
-    const container = card("What Cordia can infer", "results-wide");
+    const container = card("What Cordia can infer", "results-inferences-card results-span-3");
     const intro = element(
       "p",
       "results-muted",
@@ -173,7 +196,7 @@
   }
 
   function renderUnknowns(unknowns) {
-    const container = card("What Cordia still needs to learn", "results-wide results-unknowns");
+    const container = card("What Cordia still needs to learn", "results-unknowns");
     const list = element("ul", "results-unknown-list");
     for (const unknown of unknowns || []) {
       const item = element("li", "results-unknown");

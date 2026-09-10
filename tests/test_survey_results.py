@@ -35,18 +35,36 @@ class SurveyResultsTests(unittest.TestCase):
 
         plot = self.results(configure)["plot"]
 
+        self.assertEqual(71, plot["x"]["score"])
+        self.assertEqual(75, plot["y"]["score"])
+        self.assertEqual(88, plot["z"]["score"])
+        self.assertEqual("Execution autonomy", plot["x"]["title"])
+        self.assertEqual("Communication context", plot["y"]["title"])
+        self.assertEqual("Workflow complexity", plot["z"]["title"])
+
+    def test_plot_exposes_the_scored_answer_references_and_weights(self):
+        plot = self.results()["plot"]
+
         self.assertEqual(
-            {"score": 67, "label": "Perform approved actions"},
-            plot["delegation"],
+            {"title": "Requested control", "score": 33, "weight": 2},
+            plot["x"]["references"][0],
         )
         self.assertEqual(
-            {"score": 100, "label": "Implicit / high-context"},
-            plot["context"],
+            {"title": "Context preference", "score": 100, "weight": 2},
+            plot["y"]["references"][0],
         )
         self.assertEqual(
-            {"score": 100, "label": "Multi-environment orchestration"},
-            plot["breadth"],
+            {"title": "Workflow breadth", "score": 20, "weight": 2},
+            plot["z"]["references"][0],
         )
+
+    def test_direct_findings_reference_their_plot_axis(self):
+        findings = {finding["title"]: finding for finding in self.results()["direct_findings"]}
+
+        self.assertEqual("x", findings["Implementation preference"]["plot_axis"])
+        self.assertEqual("y", findings["Context preference"]["plot_axis"])
+        self.assertEqual("z", findings["Scope preference"]["plot_axis"])
+        self.assertEqual("x", findings["Requested control"]["plot_axis"])
 
     def test_connector_plan_preserves_truthful_registry_status(self):
         connector = self.results()["connector_plans"][0]
