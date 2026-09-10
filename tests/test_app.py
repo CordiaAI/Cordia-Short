@@ -158,7 +158,13 @@ class UniversalApplicationApiTests(unittest.TestCase):
         self.runtime = FakeRuntime()
         agent = Agent("fixture-key", "fixture-model", chat_model=ScriptedModel(replies=[]))
         self.app = create_app(
-            {"TESTING": True, "DATABASE": root / "cordia.db", "WORKSPACE_ROOT": root / "workspaces", "SESSION_COOKIE_SECURE": False},
+            {
+                "TESTING": True,
+                "DATABASE": root / "cordia.db",
+                "WORKSPACE_ROOT": root / "workspaces",
+                "SESSION_COOKIE_SECURE": False,
+                "COMING_SOON_AFTER_SURVEY": False,
+            },
             agent=agent,
             connector_runtime=self.runtime,
             workspace_client=FakeWorkspace(self.runtime),

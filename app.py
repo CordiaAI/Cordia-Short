@@ -12,9 +12,10 @@ from cordia.agent import Agent, AgentBusy, AgentUnavailable, InvalidAgentAction
 from cordia.agent_runs import AgentRuns
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
 from cordia.connectors import catalog_for_onboarding, resolve_application
-from cordia.onboarding import normalize_applications
+from cordia.onboarding import normalize_applications, score_profile
 from cordia.store import SURVEY_FIELDS, Store
 from cordia.survey import STAGE_ORDER, public_stage_schema
+from cordia.survey_results import build_survey_results
 from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
 
@@ -99,6 +100,10 @@ def create_app(
         DATABASE=ROOT / "data" / "cordia.db",
         WORKSPACE_ROOT=ROOT / "data" / "workspaces",
         SESSION_COOKIE_SECURE=os.getenv("CORDIA_ENV", "development") != "development",
+        COMING_SOON_AFTER_SURVEY=os.getenv(
+            "CORDIA_COMING_SOON_AFTER_SURVEY", "true"
+        ).strip().lower()
+        not in {"false", "0", "no"},
     )
     if config:
         app.config.update(config)
@@ -168,6 +173,7 @@ def create_app(
                         "inputs_outputs",
                         "control_level",
                         "registry_id",
+                        "auth_kind",
                         "status",
                         "actions",
                     )
@@ -207,6 +213,33 @@ def create_app(
         onboarding = onboarding_payload(user_id)
         if not store.survey_complete(user_id):
             return {"state": "onboarding", "onboarding": onboarding}
+        if app.config["COMING_SOON_AFTER_SURVEY"]:
+            stages = store.onboarding_stages(user_id)
+            try:
+                results = build_survey_results(
+                    stages,
+                    score_profile(stages),
+                    onboarding.get("selected_applications", []),
+                )
+            except (KeyError, TypeError, ValueError):
+                app.logger.exception("survey result derivation failed")
+                results = {
+                    "status": {
+                        "label": "Workspace coming soon",
+                        "detail": "Your survey is saved, but Cordia could not display the profile yet.",
+                    },
+                    "plot": None,
+                    "direct_findings": [],
+                    "connector_plans": [],
+                    "indirect_findings": [],
+                    "unknowns": [
+                        {
+                            "title": "Profile display",
+                            "statement": "Not enough evidence could be displayed safely. Your saved survey was not changed.",
+                        }
+                    ],
+                }
+            return {"state": "results", "survey_results": results}
         workspace_directory = store.workspace_root / str(user_id)
         needs_fde_bootstrap = not (workspace_directory / "surveyor.md").exists() or not (
             workspace_directory / "fde.md"
@@ -410,11 +443,12 @@ def create_app(
                     expanded_catalog_state(discovery)["applications"]
                 )
                 store.complete_onboarding(user_id, catalog)
-                try:
-                    agent_runs.start_workspace_build(user_id, locked=True)
-                except (AgentUnavailable, InvalidAgentAction, ConnectorError, WorkspaceMCPError) as exc:
-                    build_error = f"Your Surveyor is saved, but Cordia could not start the workspace build: {exc}"
-                    store.add_message(user_id, "assistant", build_error, kind="agent")
+                if not app.config["COMING_SOON_AFTER_SURVEY"]:
+                    try:
+                        agent_runs.start_workspace_build(user_id, locked=True)
+                    except (AgentUnavailable, InvalidAgentAction, ConnectorError, WorkspaceMCPError) as exc:
+                        build_error = f"Your Surveyor is saved, but Cordia could not start the workspace build: {exc}"
+                        store.add_message(user_id, "assistant", build_error, kind="agent")
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc), "onboarding": onboarding_payload(user_id)}), 409
         except OSError:
