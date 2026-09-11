@@ -20,11 +20,25 @@ print(json.dumps({'schema_version':2, 'current_stage':'workspace_review', 'compl
 const clone = value => JSON.parse(JSON.stringify(value));
 
 class Element {
-  constructor(tag, document) { this.tagName = tag.toUpperCase(); this.ownerDocument = document; this.children = []; this.attributes = {}; this.events = {}; this.value = ''; this.hidden = false; this.disabled = false; this._text = ''; }
+  constructor(tag, document) {
+    this.tagName = tag.toUpperCase(); this.ownerDocument = document; this.children = []; this.attributes = {}; this.events = {}; this.value = ''; this.hidden = false; this.disabled = false; this._text = '';
+    const classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+      toggle: (name, force) => {
+        const enabled = force === undefined ? !classes.has(name) : Boolean(force);
+        if (enabled) classes.add(name); else classes.delete(name);
+        return enabled;
+      },
+    };
+  }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   setAttribute(name, value) { this.attributes[name] = String(value); if (name === 'id') this.id = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
+  removeAttribute(name) { delete this.attributes[name]; }
   append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
   replaceChildren(...children) { this._text = ''; this.children = []; this.append(...children); }
   remove() { this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
@@ -395,6 +409,8 @@ test('app integration hides workspace and background navigation during onboardin
   }
   const window = {};
   vm.runInNewContext(fs.readFileSync('static/onboarding.js', 'utf8'), { window });
+  vm.runInNewContext(fs.readFileSync('static/survey-results.js', 'utf8'), { window, document: ui.document });
+  vm.runInNewContext(fs.readFileSync('static/landing.js', 'utf8'), { window });
   const context = vm.createContext({ window, document: ui.document, URLSearchParams, location: { search: '' }, fetch: () => new Promise(() => {}) });
   vm.runInContext(fs.readFileSync('static/app.js', 'utf8'), context);
   context.render({ state: 'onboarding', onboarding: ui.state });
@@ -415,6 +431,7 @@ test('app integration hides workspace and background navigation during onboardin
   context.render({ state: 'signed_out' });
   assert.equal(elements['app-shell'].hidden, true);
   assert.equal(elements.account.hidden, true);
-  assert.equal(elements['auth-panel'].hidden, false);
+  assert.equal(elements.landing.hidden, false);
+  assert.equal(elements['auth-panel'].hidden, true);
   assert.equal(ui.root.hidden, true);
 });

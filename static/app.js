@@ -27,6 +27,11 @@ const onboardingController = window.CordiaOnboarding.createController({
   api,
   onComplete: (state) => render(state),
 });
+const landingController = window.CordiaLanding.createController({
+  landing: byId("landing"),
+  auth: byId("auth-panel"),
+  onMode: setAuthMode,
+});
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -380,7 +385,8 @@ function render(state, transient = {}) {
   }
   const signedOut = state.state === "signed_out";
   const isOnboarding = state.state === "onboarding";
-  document.querySelector(".topbar").hidden = isOnboarding;
+  landingController.setSignedOut(signedOut);
+  document.querySelector(".topbar").hidden = signedOut || isOnboarding;
   byId("account").hidden = signedOut || isOnboarding;
   const agentRuntime = state.agent_runtime;
   byId("status-pill").textContent = signedOut
@@ -402,7 +408,6 @@ function render(state, transient = {}) {
     return;
   }
   byId("survey-results").hidden = true;
-  byId("auth-panel").hidden = !signedOut;
   byId("app-shell").hidden = signedOut || isOnboarding;
   if (signedOut) { onboardingController.hide(); return; }
   if (isOnboarding) {
@@ -449,19 +454,22 @@ window.addEventListener?.("message", (event) => {
   if (event.origin === location.origin && event.data?.type === "cordia-connector-return") refresh();
 });
 
-document.querySelectorAll("[data-auth-mode]").forEach((button) => {
-  button.addEventListener("click", () => {
-    authMode = button.dataset.authMode;
-    document.querySelectorAll("[data-auth-mode]").forEach((item) => {
-      item.classList.toggle("active", item === button);
-      item.setAttribute("aria-pressed", String(item === button));
-    });
-    byId("auth-title").textContent = authMode === "register" ? "Create account" : "Sign in";
-    byId("password").autocomplete = authMode === "register" ? "new-password" : "current-password";
-    byId("password-help").hidden = authMode !== "register";
-    byId("auth-submit").textContent = authMode === "register" ? "Create workspace" : "Sign in";
-    byId("auth-error").textContent = "";
+function setAuthMode(mode) {
+  authMode = mode === "signin" ? "signin" : "register";
+  document.querySelectorAll("[data-auth-mode]").forEach((item) => {
+    const active = item.dataset.authMode === authMode;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-pressed", String(active));
   });
+  byId("auth-title").textContent = authMode === "register" ? "Create account" : "Sign in";
+  byId("password").autocomplete = authMode === "register" ? "new-password" : "current-password";
+  byId("password-help").hidden = authMode !== "register";
+  byId("auth-submit").textContent = authMode === "register" ? "Create workspace" : "Sign in";
+  byId("auth-error").textContent = "";
+}
+
+document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+  button.addEventListener("click", () => setAuthMode(button.dataset.authMode));
 });
 
 byId("auth-form").addEventListener("submit", async (event) => {

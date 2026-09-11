@@ -13,6 +13,94 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <main id="landing" class="landing">
+    <header class="landing-header">
+      <a class="landing-brand" href="/" aria-label="Cordia home"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="191" height="30"></a>
+      <nav class="landing-nav" aria-label="Public navigation">
+        <a href="#cordia-message">Why Cordia</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#products">Products</a>
+      </nav>
+      <div class="landing-account-actions">
+        <button class="landing-signin" type="button" data-auth-open="signin">Sign in</button>
+        <button class="landing-primary" type="button" data-auth-open="register">Create account</button>
+      </div>
+    </header>
+
+    <section class="landing-hero">
+      <div class="landing-background" aria-hidden="true"></div>
+      <div class="landing-hero-copy">
+        <p class="landing-eyebrow">THE HUMAN–AI WORKSPACE</p>
+        <h1>I see humans,<br>but no <em>humanity.</em></h1>
+        <p>AI adoption fails on <strong>intent</strong>, not capability. Cordia learns how you work, connects the tools you already use, and builds one workspace around you.</p>
+        <div class="landing-hero-actions">
+          <button class="landing-primary" type="button" data-auth-open="register">Build my workspace</button>
+          <a href="#cordia-message">See how Cordia works</a>
+        </div>
+      </div>
+      <aside class="landing-preview" aria-label="Cordia workspace process">
+        <span>01</span><div><strong>Surveyor listens</strong><p>You explain your work once.</p></div>
+        <span>02</span><div><strong>Cordia builds</strong><p>Your workspace takes shape automatically.</p></div>
+        <span>03</span><div><strong>You stay in control</strong><p>Approve only when an action needs you.</p></div>
+      </aside>
+    </section>
+
+    <section id="cordia-message" class="landing-section landing-message">
+      <p class="landing-eyebrow">WHY CORDIA</p>
+      <h2>Software should understand the person using it.</h2>
+      <p>Cordia replaces the usual hopping between apps with one adaptive workspace. The agent keeps the context, prepares the work, and uses connected applications only when the task requires them.</p>
+    </section>
+
+    <section id="how-it-works" class="landing-section">
+      <div class="landing-section-heading">
+        <p class="landing-eyebrow">HOW IT WORKS</p>
+        <h2>From your answers to a working workspace.</h2>
+      </div>
+      <div class="landing-steps">
+        <article><span>1</span><h3>Describe your work</h3><p>Surveyor learns your goals, communication style, tools, and expectations.</p></article>
+        <article><span>2</span><h3>Connect your applications</h3><p>Cordia asks only for the sign-in, approval, or key the provider requires.</p></article>
+        <article><span>3</span><h3>Work through Cordia</h3><p>Your agent builds useful views and carries out approved actions from one place.</p></article>
+      </div>
+    </section>
+
+    <section id="products" class="landing-section landing-products">
+      <div class="landing-section-heading">
+        <p class="landing-eyebrow">PRODUCTS</p>
+        <h2>One company. Three focused ways to work with agents.</h2>
+      </div>
+      <div class="landing-product-grid">
+        <article class="landing-product featured">
+          <small>FOR INDIVIDUALS AND TEAMS</small>
+          <h3>Cordia Workspace</h3>
+          <p>An adaptive workspace that turns your context, connectors, and requests into useful work.</p>
+          <button type="button" data-auth-open="register">Create your workspace <span aria-hidden="true">→</span></button>
+        </article>
+        <article class="landing-product">
+          <small>FOR STUDENTS</small>
+          <h3>CordiaClassroom</h3>
+          <p>A focused learning workspace for turning course material into organized study support.</p>
+          <a href="https://classroom.cordiacode.com">Open CordiaClassroom <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="landing-product">
+          <small>FOR TECHNICAL BUILDERS</small>
+          <h3>Alidora</h3>
+          <p>The advanced studio for designing agent systems that power Cordia workspaces.</p>
+          <a href="/dashboard/">Open Alidora <span aria-hidden="true">→</span></a>
+        </article>
+      </div>
+    </section>
+
+    <section class="landing-final">
+      <div><p class="landing-eyebrow">BEGIN WITH YOUR WORK</p><h2>Build a workspace that already understands the assignment.</h2></div>
+      <button class="landing-primary" type="button" data-auth-open="register">Create account</button>
+    </section>
+
+    <footer class="landing-footer">
+      <img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24">
+      <p>Human intent. Agent capability. One workspace.</p>
+    </footer>
+  </main>
+
   <header class="topbar">
     <a class="brand" href="/" aria-label="Cordia home"><img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24"></a>
     <span id="workspace-title" class="workspace-label">My Workspace</span>
@@ -82,7 +170,7 @@
     </main>
   </section>
 
-  <section id="auth-panel" class="auth-panel">
+  <section id="auth-panel" class="auth-panel" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
     <div class="auth-background" aria-hidden="true"></div>
     <div class="auth-intro">
       <img src="/static/assets/cordia-logo-header.webp" alt="Cordia" width="153" height="24">
@@ -90,6 +178,7 @@
       <p>AI adoption fails on <strong>intent</strong>, not capability.<br>Cordia measures that.</p>
     </div>
     <div class="auth-card">
+      <button class="auth-close" type="button" data-auth-close aria-label="Return to Cordia home">×</button>
       <h2 id="auth-title">Create account</h2>
       <div class="auth-tabs" role="group" aria-label="Account access">
         <button type="button" data-auth-mode="signin" aria-pressed="false">Sign in</button>
@@ -117,6 +206,7 @@
 
   <script src="/static/onboarding.js" defer></script>
   <script src="/static/survey-results.js" defer></script>
+  <script src="/static/landing.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

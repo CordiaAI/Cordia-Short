@@ -9,6 +9,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkspaceUIContractTests(unittest.TestCase):
+    def test_signed_out_page_is_a_public_product_landing_surface(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="landing"', html)
+        self.assertIn('id="cordia-message"', html)
+        self.assertIn('id="products"', html)
+        self.assertIn('data-auth-open="signin"', html)
+        self.assertIn('data-auth-open="register"', html)
+        self.assertIn('href="https://classroom.cordiacode.com"', html)
+        self.assertIn('href="/dashboard/"', html)
+        self.assertIn('data-auth-close', html)
+        self.assertIn('/static/landing.js', html)
+
     def test_one_page_contains_auth_chat_setup_and_artifact_surfaces(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="auth-panel"', html)
