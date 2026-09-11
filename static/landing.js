@@ -1,6 +1,7 @@
 (function () {
-  function createController({ landing, auth, onMode }) {
+  function createController({ landing, auth, onMode, initialMode }) {
     let signedOut = false;
+    let pendingMode = ["signin", "register"].includes(initialMode) ? initialMode : null;
 
     function showLanding() {
       landing.hidden = !signedOut;
@@ -15,17 +16,20 @@
       auth.querySelector("input")?.focus();
     }
 
-    landing.querySelectorAll("[data-auth-open]").forEach((button) => {
-      button.addEventListener("click", () => open(button.getAttribute("data-auth-open")));
-    });
     auth.querySelector("[data-auth-close]")?.addEventListener("click", showLanding);
 
     return {
       setSignedOut(value) {
         signedOut = value === true;
+        if (signedOut && pendingMode) {
+          const mode = pendingMode;
+          pendingMode = null;
+          open(mode);
+          return;
+        }
+        if (!signedOut) pendingMode = null;
         showLanding();
       },
-      open,
       showLanding,
     };
   }

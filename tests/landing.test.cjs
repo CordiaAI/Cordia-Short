@@ -18,16 +18,11 @@ class Element {
   focus() { this.focused = true; }
 }
 
-function setup() {
+function setup(initialMode) {
   const landing = new Element();
   const auth = new Element();
   const email = new Element();
-  const register = new Element();
-  const signin = new Element();
   const close = new Element();
-  register.setAttribute("data-auth-open", "register");
-  signin.setAttribute("data-auth-open", "signin");
-  landing.querySelectorAll = selector => selector === "[data-auth-open]" ? [register, signin] : [];
   auth.querySelector = selector => selector === "[data-auth-close]" ? close : selector === "input" ? email : null;
   const modes = [];
   const window = {};
@@ -36,8 +31,9 @@ function setup() {
     landing,
     auth,
     onMode: mode => modes.push(mode),
+    initialMode,
   });
-  return { landing, auth, email, register, signin, close, modes, controller };
+  return { landing, auth, email, close, modes, controller };
 }
 
 test("signed-out visitors see the public landing page before authentication", () => {
@@ -47,13 +43,12 @@ test("signed-out visitors see the public landing page before authentication", ()
   assert.equal(ui.auth.hidden, true);
 });
 
-test("landing calls to action open the requested existing authentication mode", () => {
-  const ui = setup();
+test("a new workspace-entry tab opens its requested authentication mode", () => {
+  const ui = setup("register");
   ui.controller.setSignedOut(true);
-  ui.signin.fire("click");
   assert.equal(ui.landing.hidden, true);
   assert.equal(ui.auth.hidden, false);
-  assert.deepEqual(ui.modes, ["signin"]);
+  assert.deepEqual(ui.modes, ["register"]);
   assert.equal(ui.email.focused, true);
 
   ui.close.fire("click");
@@ -61,10 +56,9 @@ test("landing calls to action open the requested existing authentication mode", 
   assert.equal(ui.auth.hidden, true);
 });
 
-test("authenticated visitors cannot reopen the public authentication surface", () => {
-  const ui = setup();
+test("a cached authenticated session ignores workspace-entry authentication intent", () => {
+  const ui = setup("register");
   ui.controller.setSignedOut(false);
-  ui.register.fire("click");
   assert.equal(ui.landing.hidden, true);
   assert.equal(ui.auth.hidden, true);
   assert.deepEqual(ui.modes, []);

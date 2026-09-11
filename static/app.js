@@ -31,6 +31,7 @@ const landingController = window.CordiaLanding.createController({
   landing: byId("landing"),
   auth: byId("auth-panel"),
   onMode: setAuthMode,
+  initialMode: new URLSearchParams(location.search).get("auth"),
 });
 
 function escapeHtml(value) {
