@@ -157,6 +157,21 @@ test("survey results render bounded sections without HTML interpolation", () => 
 });
 
 
+test("survey results expose a visible but unavailable workspace builder", () => {
+  const { document, window } = loadRenderer();
+  const root = document.createElement("main");
+
+  window.CordiaSurveyResults.render(root, resultsFixture());
+
+  const buildButton = root.querySelectorAll("button").find(
+    (button) => button.textContent === "Build workspace",
+  );
+  assert.ok(buildButton);
+  assert.equal(buildButton.disabled, true);
+  assert.equal(buildButton.attributes["aria-disabled"], "true");
+});
+
+
 test("missing plot renders saved status without drawing invented coordinates", () => {
   const { document, window } = loadRenderer();
   const root = document.createElement("main");

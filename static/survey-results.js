@@ -212,11 +212,16 @@
 
   function render(root, results) {
     const hero = element("header", "results-hero");
+    const buildButton = element("button", "results-build-button", "Build workspace");
+    buildButton.type = "button";
+    buildButton.disabled = true;
+    buildButton.setAttribute("aria-disabled", "true");
     hero.append(
       element("p", "eyebrow", "YOUR CORDIA PROFILE"),
       element("h1", "", "How Cordia will work with you"),
       element("span", "results-coming-soon", results.status.label),
       element("p", "results-status", results.status.detail),
+      buildButton,
     );
     const grid = element("section", "results-grid");
     grid.append(
