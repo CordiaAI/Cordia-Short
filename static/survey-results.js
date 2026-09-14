@@ -6,16 +6,28 @@
     return node;
   }
 
-  function card(title, className = "") {
-    const container = element("article", `results-card ${className}`.trim());
-    container.append(element("h2", "results-card-title", title));
-    return container;
+  function card(title, summary, className = "", open = false) {
+    const container = element("details", `results-card ${className}`.trim());
+    container.open = open;
+    const heading = element("summary", "results-card-summary");
+    heading.append(
+      element("h2", "results-card-title", title),
+      element("span", "results-card-meta", summary),
+    );
+    const content = element("div", "results-card-content");
+    container.append(heading, content);
+    return { container, content };
   }
 
   function definition(list, term, description) {
     const row = element("div", "results-definition");
     row.append(element("dt", "", term), element("dd", "", description));
     list.append(row);
+  }
+
+  function countLabel(items, singular) {
+    const count = (items || []).length;
+    return `${count} ${singular}${count === 1 ? "" : "s"}`;
   }
 
   function drawPlot(canvas, plot) {
@@ -51,9 +63,14 @@
   }
 
   function renderPlot(plot) {
-    const container = card("Your AI working style", "results-plot-card results-span-2");
+    const { container, content } = card(
+      "Your AI working style",
+      plot ? "3 scored axes" : "Unavailable",
+      "results-plot-card",
+      true,
+    );
     if (!plot) {
-      container.append(element("p", "results-muted", "The plot could not be displayed safely."));
+      content.append(element("p", "results-muted", "The plot could not be displayed safely."));
       return container;
     }
     const canvas = element("canvas", "results-plot");
@@ -65,7 +82,7 @@
       `Execution autonomy ${plot.x.score} of 100, communication context ${plot.y.score} of 100, workflow complexity ${plot.z.score} of 100.`,
     );
     drawPlot(canvas, plot);
-    container.append(canvas);
+    content.append(canvas);
 
     const coordinates = element("dl", "results-coordinate-list");
     for (const key of ["x", "y", "z"]) {
@@ -86,12 +103,16 @@
       }
       references.append(group);
     }
-    container.append(coordinates, references);
+    content.append(coordinates, references);
     return container;
   }
 
   function renderDirectFindings(findings) {
-    const container = card("What your answers say", "results-answers-card");
+    const { container, content } = card(
+      "What your answers say",
+      countLabel(findings, "finding"),
+      "results-answers-card",
+    );
     const list = element("ul", "results-finding-list");
     for (const finding of findings || []) {
       const item = element("li", "results-finding");
@@ -117,7 +138,7 @@
       }
       list.append(item);
     }
-    container.append(list);
+    content.append(list);
     return container;
   }
 
@@ -129,7 +150,11 @@
   }
 
   function renderConnectors(connectors) {
-    const container = card("Your application plan", "results-connectors-card results-span-2");
+    const { container, content } = card(
+      "Your application plan",
+      countLabel(connectors, "application"),
+      "results-connectors-card",
+    );
     const intro = element(
       "p",
       "results-muted",
@@ -155,12 +180,16 @@
     if (!(connectors || []).length) {
       grid.append(element("p", "results-muted", "No applications were selected."));
     }
-    container.append(intro, grid);
+    content.append(intro, grid);
     return container;
   }
 
   function renderInferences(findings) {
-    const container = card("What Cordia can infer", "results-inferences-card results-span-3");
+    const { container, content } = card(
+      "What Cordia can infer",
+      countLabel(findings, "supported inference"),
+      "results-inferences-card",
+    );
     const intro = element(
       "p",
       "results-muted",
@@ -191,12 +220,16 @@
     if (!(findings || []).length) {
       list.append(element("p", "results-muted", "No cross-answer findings were supported."));
     }
-    container.append(intro, list);
+    content.append(intro, list);
     return container;
   }
 
   function renderUnknowns(unknowns) {
-    const container = card("What Cordia still needs to learn", "results-unknowns");
+    const { container, content } = card(
+      "What Cordia still needs to learn",
+      countLabel(unknowns, "open question"),
+      "results-unknowns",
+    );
     const list = element("ul", "results-unknown-list");
     for (const unknown of unknowns || []) {
       const item = element("li", "results-unknown");
@@ -206,7 +239,7 @@
     if (!(unknowns || []).length) {
       list.append(element("li", "results-muted", "No consequential gaps were detected from the available structured answers."));
     }
-    container.append(list);
+    content.append(list);
     return container;
   }
 

@@ -157,6 +157,26 @@ test("survey results render bounded sections without HTML interpolation", () => 
 });
 
 
+test("survey results use compact native disclosure cards", () => {
+  const { document, window } = loadRenderer();
+  const root = document.createElement("main");
+
+  window.CordiaSurveyResults.render(root, resultsFixture());
+
+  const cards = root.querySelectorAll("details").filter(
+    (details) => details.className.split(" ").includes("results-card"),
+  );
+  assert.equal(cards.length, 5);
+  assert.equal(cards.filter((details) => details.open).length, 1);
+  assert.match(cards[0].textContent, /3 scored axes/);
+  assert.match(cards[1].textContent, /1 finding/);
+  assert.match(cards[2].textContent, /1 application/);
+  assert.match(cards[3].textContent, /1 supported inference/);
+  assert.match(cards[4].textContent, /1 open question/);
+  assert.equal(root.querySelectorAll("summary").length, 6);
+});
+
+
 test("survey results expose a visible but unavailable workspace builder", () => {
   const { document, window } = loadRenderer();
   const root = document.createElement("main");
