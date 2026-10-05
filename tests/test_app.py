@@ -138,6 +138,9 @@ class RecordingWorkspaceClient:
             raise WorkspaceMCPError("provider operation failed")
         if tool_name == "connector_start":
             return {"type": "oauth_redirect", "connector_id": arguments["connector_id"], "title": "Connect application", "status": "ready", "message": "Continue securely.", "action_url": "https://connect.example.test/session"}
+        if tool_name == "connector_status":
+            status = self.store.connection_status(user_id, arguments["connector_id"]) or "not_connected"
+            return {"connector_id": arguments["connector_id"], "status": status}
         if tool_name == "connectors_search":
             query = str(arguments.get("query") or "google_drive")
             return {"status": "ready", "connectors": [{"id": query, "name": query.replace("_", " ").title()}]}

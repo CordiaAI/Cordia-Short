@@ -345,6 +345,10 @@ def create_app(
     def index():
         return send_from_directory(app.static_folder, "index.html")
 
+    @app.get("/favicon.ico")
+    def favicon():
+        return send_from_directory(app.static_folder, "assets/cordia-favicon.ico")
+
     @app.get("/api/health")
     def health():
         return jsonify({"ok": True})

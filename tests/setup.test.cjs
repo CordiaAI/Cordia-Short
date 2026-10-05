@@ -11,7 +11,8 @@ function app() {
     if (!nodes.has(id)) nodes.set(id, {
       listeners: {}, hidden: false, innerHTML: '', textContent: '',
       addEventListener(name, callback) { this.listeners[name] = callback; },
-      setAttribute() {}, querySelector() { return node(id + '-child'); },
+      classList: { toggle() {}, add() {}, remove() {} },
+      setAttribute() {}, removeAttribute() {}, querySelector() { return node(id + '-child'); },
       querySelectorAll() { return []; },
     });
     return nodes.get(id);
@@ -19,7 +20,11 @@ function app() {
   const requests = [];
   const context = vm.createContext({
     document: { getElementById: node, querySelector: node, querySelectorAll: () => [], addEventListener() {} },
-    window: { CordiaOnboarding: { createController: () => ({ hide() {} }) } },
+    window: {
+      CordiaOnboarding: { createController: () => ({ hide() {} }) },
+      CordiaLanding: { createController: () => ({ setSignedOut() {} }) },
+      CordiaSurveyResults: { activate: () => false },
+    },
     location: { search: '' }, URLSearchParams,
     fetch: async (url, options) => {
       requests.push({ url, options });

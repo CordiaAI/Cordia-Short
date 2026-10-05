@@ -170,6 +170,9 @@ class UniversalConnectorRuntimeTests(unittest.TestCase):
     def test_mcp_configuration_is_scoped_to_user_project_and_dynamic_app(self):
         runtime = self.runtime()
         setup = runtime.start_connection(self.user_id, "app_alpha")
+        self.provider_accounts = [
+            {"id": "account-123", "dead": False, "healthy": True, "app": {"name_slug": "app_alpha"}}
+        ]
         runtime.finish_connection(self.user_id, "app_alpha", {"state": setup["state"]})
 
         config = runtime.mcp_configuration(self.user_id, "app_alpha")
