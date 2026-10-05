@@ -20,7 +20,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn('href="/?auth=register"', html)
         self.assertIn('href="https://classroom.cordiaai.io"', html)
         self.assertNotIn('classroom.cordiacode.com', html)
-        self.assertIn('href="/dashboard/"', html)
+        self.assertNotIn('/dashboard/', html)  # the old Hostinger dashboard is retired
         self.assertIn('data-auth-close', html)
         self.assertIn('/static/landing.js', html)
 
