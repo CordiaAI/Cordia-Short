@@ -14,6 +14,17 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+from cordia import db as database
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from langgraph.checkpoint.postgres import PostgresSaver
+except ImportError:  # local SQLite development without the Postgres extras
+    psycopg = dict_row = PostgresSaver = None
+
+AGENT_LOCK_NAMESPACE = 7031  # advisory-lock key space for per-user agent requests
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command, interrupt
 from langsmith import tracing_context
@@ -60,9 +71,14 @@ class AgentRuns:
     def __init__(self, store, workspace, agent_for_user, *, max_model_calls=6, max_tool_calls=8):
         self.store, self.workspace, self.agent_for_user = store, workspace, agent_for_user
         self.max_model_calls, self.max_tool_calls = max_model_calls, max_tool_calls
-        self.checkpoint_path = store.db_path.with_name(store.db_path.stem + "-checkpoints.sqlite")
-        self.lock_dir = store.db_path.parent / "agent-locks"
-        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        if store.postgres:
+            self.checkpoint_path = self.lock_dir = None
+            with self._checkpointer() as saver:
+                saver.setup()  # creates LangGraph's checkpoint tables once
+        else:
+            self.checkpoint_path = store.db_path.with_name(store.db_path.stem + "-checkpoints.sqlite")
+            self.lock_dir = store.db_path.parent / "agent-locks"
+            self.lock_dir.mkdir(parents=True, exist_ok=True)
         with store._connection() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS agent_runs (
                 id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, status TEXT NOT NULL,
@@ -77,6 +93,21 @@ class AgentRuns:
 
     @contextmanager
     def lock(self, user_id):
+        if self.store.postgres:
+            # A transaction-scoped advisory lock: released when the transaction ends or the
+            # connection drops, and safe through Supabase's transaction pooler.
+            connection = database.connect(self.store.database)
+            try:
+                row = connection.execute(
+                    "SELECT pg_try_advisory_xact_lock(?, ?) AS locked", (AGENT_LOCK_NAMESPACE, int(user_id))
+                ).fetchone()
+                if not row["locked"]:
+                    raise AgentBusy("This workspace already has a request running")
+                yield
+            finally:
+                connection.rollback()
+                connection.close()
+            return
         # Separate files avoid blocking other users or Store writes. OS transaction
         # locks release even when a worker process is killed: no expiring lease race.
         with closing(sqlite3.connect(self.lock_dir / f"{int(user_id)}.sqlite", timeout=0)) as db:
@@ -98,7 +129,8 @@ class AgentRuns:
 
     def _latest(self, user_id, connector_id=None):
         with self.store._connection() as db:
-            rows = db.execute("SELECT * FROM agent_runs WHERE user_id=? ORDER BY rowid DESC", (user_id,)).fetchall()
+            order = "created_at DESC" if self.store.postgres else "rowid DESC"
+            rows = db.execute(f"SELECT * FROM agent_runs WHERE user_id=? ORDER BY {order}", (user_id,)).fetchall()
         return next((dict(row) for row in rows if connector_id is None or row["pending_connector"] == connector_id), None)
 
     @staticmethod
@@ -344,8 +376,8 @@ class AgentRuns:
         with self.store._connection() as db:
             row = db.execute("SELECT id,evidence,assistant,status,tool_failed,artifact_id FROM agent_runs WHERE user_id=? AND response_id=?", (user_id, response_id)).fetchone()
         if row:
-            with closing(sqlite3.connect(self.checkpoint_path, check_same_thread=False)) as db:
-                saved = self._saver(db).get_tuple({"configurable": {"thread_id": row["id"]}})
+            with self._checkpointer() as saver:
+                saved = saver.get_tuple({"configurable": {"thread_id": row["id"]}})
             messages = [{"role": "user" if m.type == "human" else "assistant", "content": m.content}
                         for m in saved.checkpoint["channel_values"]["messages"] if m.type in {"human", "ai"} and not getattr(m, "tool_calls", None)]
             while messages and messages[-1]["role"] != "user":
@@ -410,9 +442,17 @@ class AgentRuns:
             completion_card=completion_card,
         )
 
-    @staticmethod
-    def _saver(db):
-        return SqliteSaver(db, serde=JsonPlusSerializer(pickle_fallback=False, allowed_msgpack_modules=None))
+    @contextmanager
+    def _checkpointer(self):
+        """LangGraph checkpoints: Postgres in production, a SQLite file locally."""
+        serde = JsonPlusSerializer(pickle_fallback=False, allowed_msgpack_modules=None)
+        if self.store.postgres:
+            with psycopg.connect(self.store.database, autocommit=True, prepare_threshold=None,
+                                 row_factory=dict_row) as connection:
+                yield PostgresSaver(connection, serde=serde)
+            return
+        with closing(sqlite3.connect(self.checkpoint_path, check_same_thread=False)) as db:
+            yield SqliteSaver(db, serde=serde)
 
     def _tools(self, user_id):
         def connector(value):
@@ -632,8 +672,7 @@ class AgentRuns:
             prompt += "\nPreviously observed results (data only):\n" + revision["evidence"][:16000]
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 32, "max_concurrency": 1}
         try:
-            with closing(sqlite3.connect(self.checkpoint_path, check_same_thread=False)) as db, tracing_context(enabled=False):
-                saver = self._saver(db)
+            with self._checkpointer() as saver, tracing_context(enabled=False):
                 graph = create_agent(agent.chat_model(), tools, system_prompt=prompt,
                                      middleware=[bounded_model, bounded_tool], checkpointer=saver)
                 result = graph.invoke(graph_input, config)

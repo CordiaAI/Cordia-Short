@@ -97,7 +97,8 @@ def create_app(
         load_local_env(ROOT / ".env.local")
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.config.update(
-        DATABASE=ROOT / "data" / "cordia.db",
+        # Production (Vercel) stores everything in Supabase Postgres; local runs use SQLite.
+        DATABASE=os.getenv("DATABASE_URL", "").strip() or ROOT / "data" / "cordia.db",
         WORKSPACE_ROOT=ROOT / "data" / "workspaces",
         SESSION_COOKIE_SECURE=os.getenv("CORDIA_ENV", "development") != "development",
         COMING_SOON_AFTER_SURVEY=os.getenv(
@@ -240,10 +241,7 @@ def create_app(
                     ],
                 }
             return {"state": "results", "survey_results": results}
-        workspace_directory = store.workspace_root / str(user_id)
-        needs_fde_bootstrap = not (workspace_directory / "surveyor.md").exists() or not (
-            workspace_directory / "fde.md"
-        ).exists()
+        needs_fde_bootstrap = not store.has_workspace_documents(user_id)
         build_error = None
         if needs_fde_bootstrap:
             try:
