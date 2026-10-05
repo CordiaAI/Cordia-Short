@@ -1,25 +1,11 @@
 {
-  "routes": [
+  "redirects": [
+    { "source": "/app/:path*", "destination": "https://dashboard.cordiaai.io/:path*", "permanent": false },
     {
-      "src": "/",
-      "has": [
-        {
-          "type": "query",
-          "key": "auth"
-        }
-      ],
-      "dest": "https://cordiacode.com/"
-    },
-    {
-      "src": "/app/?",
-      "dest": "https://cordiacode.com/"
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "https://cordiacode.com/$1"
+      "source": "/",
+      "has": [{ "type": "query", "key": "auth" }],
+      "destination": "https://dashboard.cordiaai.io/",
+      "permanent": false
     }
   ]
 }

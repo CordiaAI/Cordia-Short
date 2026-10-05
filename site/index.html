@@ -24,8 +24,8 @@
         <a href="#products">Products</a>
       </nav>
       <div class="landing-account-actions">
-        <a class="landing-signin" href="/app?auth=signin" target="_blank" rel="noopener">Sign in</a>
-        <a class="landing-primary" href="/app?auth=register" target="_blank" rel="noopener">Create account</a>
+        <a class="landing-signin" href="https://dashboard.cordiaai.io/?auth=signin" target="_blank" rel="noopener">Sign in</a>
+        <a class="landing-primary" href="https://dashboard.cordiaai.io/?auth=register" target="_blank" rel="noopener">Create account</a>
       </div>
     </header>
 
@@ -39,7 +39,7 @@
         <h1>Your imagination should be the <em>limit.</em></h1>
         <p>AI should carry the technical weight—not decide what a human is capable of. Cordia learns how you think, connects the tools you use, and turns your ideas into action.</p>
         <div class="landing-hero-actions">
-          <a class="landing-primary" href="/app?auth=register" target="_blank" rel="noopener">Build my workspace</a>
+          <a class="landing-primary" href="https://dashboard.cordiaai.io/?auth=register" target="_blank" rel="noopener">Build my workspace</a>
           <a href="#cordia-message">See how Cordia works</a>
         </div>
       </div>
@@ -78,7 +78,7 @@
           <small>FOR INDIVIDUALS AND TEAMS</small>
           <h3>Cordia Workspace</h3>
           <p>An adaptive workspace that turns your context, connectors, and requests into useful work.</p>
-          <a href="/app?auth=register" target="_blank" rel="noopener">Create your workspace <span aria-hidden="true">→</span></a>
+          <a href="https://dashboard.cordiaai.io/?auth=register" target="_blank" rel="noopener">Create your workspace <span aria-hidden="true">→</span></a>
         </article>
         <article class="landing-product">
           <small>FOR STUDENTS</small>
@@ -90,14 +90,14 @@
           <small>FOR TECHNICAL BUILDERS</small>
           <h3>Alidora</h3>
           <p>The advanced studio for designing agent systems that power Cordia workspaces.</p>
-          <a href="/dashboard/" target="_blank" rel="noopener">Open Alidora <span aria-hidden="true">→</span></a>
+          <span class="results-coming-soon">Coming soon</span>
         </article>
       </div>
     </section>
 
     <section class="landing-final">
       <div><p class="landing-eyebrow">BEGIN WITH AN IDEA</p><h2>Bring the idea. Cordia builds the way to act on it.</h2></div>
-      <a class="landing-primary" href="/app?auth=register" target="_blank" rel="noopener">Create account</a>
+      <a class="landing-primary" href="https://dashboard.cordiaai.io/?auth=register" target="_blank" rel="noopener">Create account</a>
     </section>
 
     <footer class="landing-footer">
@@ -106,16 +106,5 @@
     </footer>
   </main>
 
-  <script>
-    // Signed-in visitors go straight back to their workspace instead of seeing "Sign in".
-    fetch("/api/state", { credentials: "same-origin" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((state) => {
-        if (!state || state.state === "signed_out") return;
-        const actions = document.querySelector(".landing-account-actions");
-        if (actions) actions.innerHTML = '<a class="landing-primary" href="/app">Open workspace</a>';
-      })
-      .catch(() => {});
-  </script>
 </body>
 </html>
