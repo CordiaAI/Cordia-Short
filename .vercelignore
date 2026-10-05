@@ -1,7 +1,6 @@
 data/
 tests/
 docs/
-site/
 *.sqlite
 *.db
 .env*

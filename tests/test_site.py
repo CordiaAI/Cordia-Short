@@ -32,6 +32,12 @@ class MarketingSiteTests(unittest.TestCase):
         self.assertEqual("https://dashboard.cordiaai.io/:path*", redirects["/app/:path*"]["destination"])
         self.assertEqual("auth", redirects["/"]["has"][0]["key"])  # old /?auth= links still open sign-in
 
+    def test_vercel_upload_keeps_the_landing_files(self):
+        # cordia-web builds from site/; the repository-wide .vercelignore must not strip it.
+        ignored = (SITE.parent / ".vercelignore").read_text(encoding="utf-8").split()
+        self.assertNotIn("site/", ignored)
+        self.assertNotIn("site", ignored)
+
 
 if __name__ == "__main__":
     unittest.main()
