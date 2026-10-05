@@ -13,6 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # Production runs on Supabase Postgres; tests/test_postgres.py exercises the same code here.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cordia
+          POSTGRES_PASSWORD: cordia
+          POSTGRES_DB: cordia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cordia" --health-interval 5s --health-timeout 5s --health-retries 10
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -30,4 +42,6 @@ jobs:
         run: python -m compileall -q app.py cordia tests
 
       - name: Run tests
+        env:
+          CORDIA_TEST_DATABASE_URL: postgresql://cordia:cordia@localhost:5432/cordia
         run: python -m unittest discover -s tests -v
