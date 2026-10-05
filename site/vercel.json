@@ -1,0 +1,25 @@
+{
+  "routes": [
+    {
+      "src": "/",
+      "has": [
+        {
+          "type": "query",
+          "key": "auth"
+        }
+      ],
+      "dest": "https://cordiacode.com/"
+    },
+    {
+      "src": "/app/?",
+      "dest": "https://cordiacode.com/"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "https://cordiacode.com/$1"
+    }
+  ]
+}
