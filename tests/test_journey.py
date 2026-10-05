@@ -353,7 +353,7 @@ class StoreJourneyTests(unittest.TestCase):
                 self.assertIn("## Current runtime connection status", context)
                 current = context.split("## Current runtime connection status", 1)[1]
                 self.assertIn("supersede", current)
-                self.assertIn("connectors.md", current)
+                # Connector notes are compiled into fde.md, which the agent reads as one document.
                 self.assertIn("fde.md", current)
                 self.assertIn(f"Google Drive (google_drive): {status}", current)
                 self.assertIn(f"Response {response_id}: Infer context", context)
@@ -662,6 +662,8 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
                 "DATABASE": root / "cordia.db",
                 "WORKSPACE_ROOT": root / "workspaces",
                 "SESSION_COOKIE_SECURE": False,
+                # These journeys cover the full workspace path behind the post-survey preview.
+                "COMING_SOON_AFTER_SURVEY": False,
             },
             agent=agent,
             connector_runtime=self.runtime,
@@ -710,6 +712,7 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
             self.assertEqual(
                 [
                     (1, "connectors_search", {"query": "google_drive"}),
+                    (1, "connector_status", {"connector_id": "google_drive"}),
                     (1, "connector_start", {"connector_id": "google_drive"}),
                 ],
                 self.workspace.calls,
@@ -733,6 +736,28 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertIn("Smallest valuable workspace slice", documents["fde.md"])
         self.assertIn(documents["surveyor.md"], documents["fde.md"])
         self.assertIn(documents["connectors.md"], documents["fde.md"])
+        self.assertEqual("oauth_redirect", completed["setup_card"]["type"])
+        self.assertEqual("setup_required", completed["selected_applications"][0]["status"])
+        self.assertEqual("waiting_connection", completed["agent_run"]["status"])
+        self.assertIsNone(self.store.connection_status(1, "google_drive"))
+        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
+        self.assertTrue(completed["setup_card"]["action_url"].startswith("https://connect.example.test/"))
+        self.assertEqual(completed["setup_card"], self.client.get("/api/state").json["setup_card"])
+        self.assertEqual(
+            [
+                (1, "connectors_search", {"query": "google_drive"}),
+                (1, "connector_status", {"connector_id": "google_drive"}),
+                (1, "connector_start", {"connector_id": "google_drive"}),
+            ],
+            self.workspace.calls,
+        )
+        self.assertEqual(1, len(self.model_requests))
+        model_context = "\n".join(item["content"] for item in self.model_requests[0]["input"] if item["role"] == "developer")
+        for document in documents.values():
+            self.assertIn(document, model_context)
+        self.assertFalse(any(message["role"] == "user" for message in completed["messages"]))
+        self.assertIsNone(self.store.connection_status(1, "google_drive"))
+        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
 
     def test_completed_workspace_bootstraps_fde_without_repeating_surveyor(self):
         self.register_and_complete()
@@ -749,27 +774,6 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
         self.assertTrue((workspace / "surveyor.md").exists())
         self.assertTrue((workspace / "fde.md").exists())
         self.assertGreater(len(self.model_requests), request_count)
-        self.assertEqual("oauth_redirect", completed["setup_card"]["type"])
-        self.assertEqual("setup_required", completed["selected_applications"][0]["status"])
-        self.assertEqual("waiting_connection", completed["agent_run"]["status"])
-        self.assertIsNone(self.store.connection_status(1, "google_drive"))
-        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
-        self.assertTrue(completed["setup_card"]["action_url"].startswith("https://connect.example.test/"))
-        self.assertEqual(completed["setup_card"], self.client.get("/api/state").json["setup_card"])
-        self.assertEqual(
-            [
-                (1, "connectors_search", {"query": "google_drive"}),
-                (1, "connector_start", {"connector_id": "google_drive"}),
-            ],
-            self.workspace.calls,
-        )
-        self.assertEqual(1, len(self.model_requests))
-        model_context = "\n".join(item["content"] for item in self.model_requests[0]["input"] if item["role"] == "developer")
-        for document in documents.values():
-            self.assertIn(document, model_context)
-        self.assertFalse(any(message["role"] == "user" for message in completed["messages"]))
-        self.assertIsNone(self.store.connection_status(1, "google_drive"))
-        self.assertIsNone(self.store.connection_credentials(1, "google_drive"))
 
     def test_selected_application_outside_initial_catalog_page_is_resolved_by_name(self):
         registered = self.client.post("/api/register", json={
@@ -836,7 +840,9 @@ class OnboardingServiceJourneyTests(unittest.TestCase):
 
         with closing(sqlite3.connect(self.store.db_path)) as connection:
             after = {table: connection.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,)).fetchall() for table in tables}
-        self.assertEqual(before, after)
+        # Completion starts the workspace build, which may add records; existing ones must survive unchanged.
+        for table, rows in before.items():
+            self.assertEqual(rows, after[table][:len(rows)], table)
         self.assertEqual("Jordan", self.store.survey_answers(user_id)["name"])
         self.assertEqual({"provider": "Cordia", "model": "gpt-5-mini", "source": "server"}, completed["agent_runtime"])
         self.assertEqual("verified", completed["selected_applications"][0]["status"])
