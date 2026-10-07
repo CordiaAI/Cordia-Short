@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from functools import wraps
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -13,7 +12,7 @@ from cordia.agent_runs import AgentRuns
 from cordia.connector_runtime import ConnectorError, ConnectorRuntime
 from cordia.connectors import catalog_for_onboarding, resolve_application
 from cordia.onboarding import normalize_applications, score_profile
-from cordia.store import SURVEY_FIELDS, Store
+from cordia.store import Store
 from cordia.survey import STAGE_ORDER, public_stage_schema
 from cordia.survey_results import build_survey_results
 from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
@@ -21,6 +20,26 @@ from cordia.workspace_mcp import WorkspaceMCPClient, WorkspaceMCPError
 
 ROOT = Path(__file__).resolve().parent
 SESSION_COOKIE = "cordia_session"
+MAX_REQUEST_BYTES = 256 * 1024
+# (hits, window seconds). Stored in the database so limits hold across serverless instances.
+RATE_LIMITS = {
+    "signin_ip": (30, 15 * 60),
+    "signin_email": (10, 15 * 60),
+    "register_ip": (10, 60 * 60),
+    "agent_user": (60, 60 * 60),
+}
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+        "img-src 'self' https: data:; connect-src 'self'; frame-src 'none'; object-src 'none'; "
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), geolocation=(), microphone=(self)",
+}
 ADJUSTMENT_LABELS = {
     ("context", -1): "Use only what I said",
     ("context", 1): "Use more context",
@@ -100,7 +119,10 @@ def create_app(
         # Production (Vercel) stores everything in Supabase Postgres; local runs use SQLite.
         DATABASE=os.getenv("DATABASE_URL", "").strip() or ROOT / "data" / "cordia.db",
         WORKSPACE_ROOT=ROOT / "data" / "workspaces",
-        SESSION_COOKIE_SECURE=os.getenv("CORDIA_ENV", "development") != "development",
+        SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL"))
+        or os.getenv("CORDIA_ENV", "development") != "development",
+        MAX_CONTENT_LENGTH=MAX_REQUEST_BYTES,
+        TRUST_PROXY_IP=bool(os.getenv("VERCEL")),
         COMING_SOON_AFTER_SURVEY=os.getenv(
             "CORDIA_COMING_SOON_AFTER_SURVEY", "true"
         ).strip().lower()
@@ -134,6 +156,29 @@ def create_app(
         if not user_id:
             raise PermissionError("sign in required")
         return user_id
+
+    def client_ip() -> str:
+        # Vercel's edge sets X-Real-IP itself; elsewhere a client could forge it.
+        if app.config["TRUST_PROXY_IP"]:
+            return request.headers.get("X-Real-IP", "") or request.remote_addr or "unknown"
+        return request.remote_addr or "unknown"
+
+    def throttled(name: str, subject) -> bool:
+        limit, window = RATE_LIMITS[name]
+        return store.rate_limited(f"{name}:{subject}", limit, window)
+
+    def too_many_requests():
+        return jsonify({"ok": False, "error": "Too many requests. Wait a few minutes and try again."}), 429
+
+    def set_session_cookie(response, token: str) -> None:
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            httponly=True,
+            samesite="Lax",
+            secure=bool(app.config["SESSION_COOKIE_SECURE"]),
+            max_age=7 * 24 * 60 * 60,
+        )
 
     def onboarding_payload(user_id: int) -> dict:
         onboarding = store.onboarding_state(user_id)
@@ -279,31 +324,6 @@ def create_app(
     agent_runs = AgentRuns(store, workspace, active_agent)
     app.extensions["agent_runs"] = agent_runs
 
-    def exclusive_workspace_action(handler):
-        @wraps(handler)
-        def execute(*args, **kwargs):
-            user_id = require_user()
-            with agent_runs.lock(user_id):
-                pending = agent_runs.latest(user_id)
-                if pending and pending["status"] == "waiting_connection":
-                    raise AgentBusy("Finish or cancel the pending authorization first")
-                return handler(*args, **kwargs)
-        return execute
-
-    def create_operation_artifact(
-        user_id: int, connector_id: str, operation_id: str
-    ) -> dict:
-        operation = workspace.call(
-            user_id,
-            "connector_call",
-            {"connector_id": connector_id, "operation_id": operation_id, "inputs": {}},
-        )
-        return workspace.call(
-            user_id,
-            "artifact_create",
-            {"payload": operation["artifact"]},
-        )["artifact"]
-
     def continue_after_connection(user_id: int, connector_id: str) -> dict:
         try:
             resumed = agent_runs.resume(user_id, connector_id, locked=True)
@@ -331,6 +351,23 @@ def create_app(
         )
         return {"status": "completed", "artifact": None}
 
+    @app.after_request
+    def security_headers(response):
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if app.config["SESSION_COOKIE_SECURE"]:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+            )
+        if request.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    @app.errorhandler(413)
+    def request_too_large(exc):
+        del exc
+        return jsonify({"ok": False, "error": "request is too large"}), 413
+
     @app.errorhandler(PermissionError)
     def permission_error(exc):
         return jsonify({"ok": False, "error": str(exc)}), 401
@@ -357,64 +394,46 @@ def create_app(
 
     @app.post("/api/register")
     def register():
+        if throttled("register_ip", client_ip()):
+            return too_many_requests()
         payload = request.get_json(silent=True) or {}
         try:
-            user_id = store.register(payload.get("email", ""), payload.get("password", ""))
+            user_id = store.register(
+                str(payload.get("email") or ""), str(payload.get("password") or "")
+            )
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         token = store.create_session(user_id)
         response = jsonify({"ok": True, **state_payload(user_id)})
         response.status_code = 201
-        response.set_cookie(
-            SESSION_COOKIE,
-            token,
-            httponly=True,
-            samesite="Lax",
-            secure=bool(app.config["SESSION_COOKIE_SECURE"]),
-            max_age=7 * 24 * 60 * 60,
-        )
+        set_session_cookie(response, token)
         return response
 
     @app.post("/api/signin")
     def signin():
         payload = request.get_json(silent=True) or {}
-        user_id = store.authenticate(payload.get("email", ""), payload.get("password", ""))
+        email = str(payload.get("email") or "").strip().lower()[:320]
+        if throttled("signin_ip", client_ip()) or throttled("signin_email", email):
+            return too_many_requests()
+        user_id = store.authenticate(email, str(payload.get("password") or ""))
         if not user_id:
             return jsonify({"ok": False, "error": "email or password is incorrect"}), 401
         token = store.create_session(user_id)
         response = jsonify({"ok": True, **state_payload(user_id)})
-        response.set_cookie(
-            SESSION_COOKIE,
-            token,
-            httponly=True,
-            samesite="Lax",
-            secure=bool(app.config["SESSION_COOKIE_SECURE"]),
-            max_age=7 * 24 * 60 * 60,
-        )
+        set_session_cookie(response, token)
         return response
 
     @app.post("/api/signout")
     def signout():
         store.end_session(request.cookies.get(SESSION_COOKIE))
         response = jsonify({"ok": True, "state": "signed_out"})
-        response.delete_cookie(SESSION_COOKIE)
+        response.delete_cookie(
+            SESSION_COOKIE,
+            httponly=True,
+            samesite="Lax",
+            secure=bool(app.config["SESSION_COOKIE_SECURE"]),
+        )
         return response
-
-    @app.post("/api/survey")
-    def survey():
-        user_id = require_user()
-        answers = store.survey_answers(user_id)
-        if store.onboarding_stages(user_id) or not any(answers.get(field) for field in SURVEY_FIELDS):
-            return jsonify({"error": "Continue in the new Surveyor"}), 410
-        if store.legacy_survey_complete(user_id):
-            return jsonify({"ok": False, "error": "Surveyor is already complete"}), 409
-        current = next(field for field in SURVEY_FIELDS if not answers.get(field))
-        answer = str((request.get_json(silent=True) or {}).get("answer", "")).strip()
-        if not answer:
-            return jsonify({"ok": False, "error": "answer is required"}), 400
-        store.add_message(user_id, "user", answer, kind="survey")
-        store.save_survey_answer(user_id, current, answer)
-        return jsonify({"ok": True, **state_payload(user_id)})
 
     @app.get("/api/onboarding")
     def onboarding_state():
@@ -467,6 +486,10 @@ def create_app(
         message = str(payload.get("message", "")).strip()
         if not message:
             return jsonify({"ok": False, "error": "message is required"}), 400
+        if len(message) > 8000:
+            return jsonify({"ok": False, "error": "message is too long"}), 400
+        if throttled("agent_user", user_id):
+            return too_many_requests()
         action_starter = None
         if payload.get("action_starter") is not None:
             try:
@@ -542,6 +565,8 @@ def create_app(
         label = ADJUSTMENT_LABELS.get((axis, target))
         if not label:
             return jsonify({"ok": False, "error": "Choose one available response adjustment"}), 400
+        if throttled("agent_user", user_id):
+            return too_many_requests()
         try:
             with agent_runs.lock(user_id):
                 adjustment = store.adjust_operator(user_id, response_id, axis, target, label)
@@ -673,6 +698,8 @@ def create_app(
         approved = payload.get("approved")
         if not connector_id or not isinstance(approved, bool):
             return jsonify({"ok": False, "error": "connector and approval decision are required"}), 400
+        if approved and throttled("agent_user", user_id):
+            return too_many_requests()
         try:
             result = agent_runs.approve(user_id, connector_id, approved)
         except LookupError as exc:
@@ -680,70 +707,6 @@ def create_app(
         except (AgentUnavailable, InvalidAgentAction, WorkspaceMCPError) as exc:
             return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
         return jsonify({"ok": True, **result, **state_payload(user_id)})
-
-    @app.post("/api/connectors/select")
-    @exclusive_workspace_action
-    def connector_select():
-        user_id = require_user()
-        payload = request.get_json(silent=True) or {}
-        connector_id = str(payload.get("connector_id", "")).strip()
-        value = str(payload.get("value", "")).strip()
-        if not connector_id or not value:
-            return jsonify({"ok": False, "error": "connector and selection are required"}), 400
-        try:
-            selection = runtime.select_value(user_id, connector_id, value)
-        except ConnectorError as exc:
-            return jsonify({"ok": False, "error": str(exc), **state_payload(user_id)}), 422
-        return jsonify({"ok": True, "selection": selection, **state_payload(user_id)})
-
-    @app.post("/api/connectors/live-view")
-    @exclusive_workspace_action
-    def connector_live_view():
-        user_id = require_user()
-        payload = request.get_json(silent=True) or {}
-        connector_id = str(payload.get("connector_id", "")).strip()
-        if not connector_id:
-            return jsonify({"ok": False, "error": "connector is required"}), 400
-        try:
-            access = runtime.live_view_access(user_id, connector_id)
-        except ConnectorError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 422
-        if access["status"] == "unsupported":
-            return jsonify({"ok": False, "error": "Live View is not supported"}), 422
-        if access["status"] != "granted":
-            try:
-                setup_card = runtime.start_connection(
-                    user_id,
-                    connector_id,
-                    requested_scopes=access.get("missing_scopes") or None,
-                )
-            except ConnectorError as exc:
-                return jsonify({"ok": False, "error": str(exc)}), 422
-            store.save_setup_card(user_id, setup_card)
-            return jsonify(
-                {
-                    "ok": True,
-                    "live_view": access,
-                    "setup_card": setup_card,
-                    **state_payload(user_id),
-                }
-            )
-        try:
-            artifact = create_operation_artifact(
-                user_id, connector_id, access["operation"]
-            )
-        except WorkspaceMCPError as exc:
-            return jsonify(
-                {"ok": False, "error": str(exc), "live_view": access, **state_payload(user_id)}
-            ), 502
-        return jsonify(
-            {
-                "ok": True,
-                "live_view": access,
-                "artifact": artifact,
-                **state_payload(user_id),
-            }
-        )
 
     return app
 

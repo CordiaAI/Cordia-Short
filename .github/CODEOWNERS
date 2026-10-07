@@ -1,0 +1,3 @@
+# Every change to this repository needs approval from a code owner before it can merge to master.
+# master deploys to production on Vercel, so this approval is the "go live" gate.
+* @ItzJLaugh

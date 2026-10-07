@@ -122,11 +122,13 @@ class UniversalConnectorRuntimeTests(unittest.TestCase):
         self.assertEqual("Bearer developer-token", apps_call["headers"]["Authorization"])
 
     def test_missing_provider_configuration_is_truthful_and_has_no_fallback_catalog(self):
-        state = self.runtime(env={}).catalog_state()
+        runtime = self.runtime(env={})
+        state = runtime.catalog_state()
 
         self.assertEqual("needs_configuration", state["status"])
         self.assertEqual([], state["applications"])
-        self.assertIn("PIPEDREAM_PROJECT_ID", state["message"])
+        self.assertNotIn("PIPEDREAM", state["message"])
+        self.assertIn("PIPEDREAM_PROJECT_ID", runtime.missing_configuration())
         self.assertEqual([], self.calls)
 
     def test_start_connection_uses_customer_scoped_managed_auth(self):

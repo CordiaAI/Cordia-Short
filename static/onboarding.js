@@ -528,7 +528,7 @@ window.CordiaOnboarding = (() => {
           const state = await api("/api/onboarding/complete", { method: "POST", body: "{}" });
           if (state.state !== "workspace") throw new Error("Your workspace is not complete yet. Please review and try again.");
           onComplete(state);
-          if (state.setup_card?.action_url && authorizationWindow) {
+          if (/^https:\/\//.test(state.setup_card?.action_url || "") && authorizationWindow) {
             authorizationWindow.location.href = state.setup_card.action_url;
           } else {
             authorizationWindow?.close();

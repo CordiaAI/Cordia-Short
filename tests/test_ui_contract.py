@@ -49,8 +49,7 @@ class WorkspaceUIContractTests(unittest.TestCase):
         self.assertIn("action_starter", javascript)
         self.assertNotIn("adjustmentControls", javascript)
         self.assertIn("/api/connectors/setup", javascript)
-        self.assertIn("/api/connectors/select", javascript)
-        self.assertIn("data-model-select", javascript)
+        self.assertNotIn("/api/connectors/select", javascript)
         self.assertIn('type="${escapeHtml(field.type)}"', javascript)
 
     def test_chat_renders_pending_work_and_enter_submits(self):

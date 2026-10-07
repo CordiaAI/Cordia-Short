@@ -1,6 +1,6 @@
 # Cordia Short Current Build Truth
 
-Last verified: 2026-09-06
+Last verified: 2026-10-07 (security cleanup); product state last verified 2026-09-06
 
 Current FDE implementation review: 2026-09-06. The user completed a real local browser/provider pass through authorization, approval, and Slack delivery. The newest outcome-only reply and survey-action UI changes in the working tree have not been executed because the user reserved runtime testing for their own browser pass.
 
@@ -58,6 +58,17 @@ Do not describe any of these as implemented or working without new evidence.
 
 The universal control plane is implemented, fixture-verified locally, and provider/browser-verified for provider authentication, catalog retrieval, end-user authorization, and one approved Slack message action. Deployment and behavior across the full provider catalog remain unverified.
 
+## Security hardening and cleanup (2026-10-07, unit-tested only)
+
+- `app.py` sends CSP, `X-Frame-Options: DENY`, `nosniff`, Referrer-Policy, Permissions-Policy, and (when cookies are secure) HSTS on every response; `/api/*` responses are `no-store`.
+- Request bodies are capped at 256 KB, passwords at 256 characters, chat messages at 8,000 characters.
+- `Store.rate_limited` keeps fixed-window counters in the `rate_limits` table (SQLite locally, Postgres in production): sign-in per IP and per email, registration per IP, and agent turns per user. The client IP comes from Vercel's `X-Real-IP` only when `VERCEL` is set.
+- The session cookie is `Secure` whenever `VERCEL` is set or `CORDIA_ENV` is not `development`.
+- Connector configuration errors no longer name server environment variables in user-facing messages.
+- Setup-card links open only when they are `https://` URLs.
+- Removed: `/api/survey` (legacy), `/api/connectors/select`, `/api/connectors/live-view` and their runtime stubs and model-select UI; `scripts/verify_agent.py`; `design-qa.md`; root screenshot; unused `google-drive.png`; `docs/agent-framework.md`; `docs/superpowers/`.
+- Not established: deployed headers, deployed rate limits, or Postgres rate-limit behavior outside CI.
+
 ## Rejected and removed
 
 The 2026-08-31 duplicate connector-catalog/Supabase sprint was rejected and removed. Its four commits, unfinished edits, migration, seed, tests, ignored review artifacts, and abandoned SQLite stash are not current architecture or evidence.
@@ -69,7 +80,7 @@ This rejection does not prohibit a future approved use of Supabase. It prohibits
 - `AGENTS.md` controls agent behavior in this repository.
 - This file records current verified build truth.
 - `docs/NEXT_CHANGE_CONTRACT.md` records the only approved next architectural change.
-- Files under `docs/superpowers/` are historical design and implementation records unless a current contract explicitly reactivates one.
+- Historical plans and specs under `docs/superpowers/` were removed on 2026-10-07; Git history retains them.
 - Official MCP specification and Python SDK documentation control MCP protocol and SDK behavior.
 
 ## Required update rule

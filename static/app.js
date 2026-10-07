@@ -143,7 +143,7 @@ function renderSetupCard(card) {
         ${credentialFields}
         <button type="submit">Verify and connect</button>
       </form>`
-    : card.action_url
+    : /^https:\/\//.test(card.action_url || "")
       ? `<a href="${escapeHtml(card.action_url)}">Continue securely</a>`
       : `<span class="status-pill">${escapeHtml(String(card.status || "Setup required").replaceAll("_", " "))}</span>`;
   container.innerHTML = `
@@ -156,18 +156,16 @@ function renderSetupCard(card) {
 function renderArtifact(artifact, options = {}) {
   const application = applicationForArtifact(artifact);
   const displayName = application?.name || artifact.connector_name || artifact.title || "Workspace view";
-  const logoUrl = application?.logo || artifact.live_view?.logo;
+  const logoUrl = application?.logo;
   const logo = logoUrl
     ? `<img class="connector-logo" src="${escapeHtml(logoUrl)}" alt="">`
     : `<span class="connector-logo-fallback material-symbols-outlined" aria-hidden="true">widgets</span>`;
   const columns = artifactColumns(artifact);
-  const rowAction = artifact.row_action;
   const contextId = /^\d+$/.test(String(artifact.id || "")) ? artifact.id : "";
   const keyValue = columns.length === 2
     && String(columns[0].label).toLowerCase() === "field"
     && String(columns[1].label).toLowerCase() === "value";
-  const headings = columns.map(({ label }) => `<th>${escapeHtml(humanize(label))}</th>`).join("")
-    + (rowAction ? "<th>Use</th>" : "");
+  const headings = columns.map(({ label }) => `<th>${escapeHtml(humanize(label))}</th>`).join("");
   const sourceRows = (artifact.rows || []).filter((row) =>
     !(keyValue && (
       isTechnicalField(row[columns[0].index])
@@ -176,15 +174,7 @@ function renderArtifact(artifact, options = {}) {
   );
   const rows = sourceRows.slice(0, 8).map((row) => {
     const cells = columns.map(({ index }) => `<td>${renderCell(row[index])}</td>`).join("");
-    if (!rowAction) return `<tr>${cells}</tr>`;
-    const value = String(row[rowAction.value_column] ?? "");
-    const selectable = !rowAction.allowed_values || rowAction.allowed_values.includes(value);
-    if (!selectable) return `<tr>${cells}<td><span class="model-unavailable">Unavailable</span></td></tr>`;
-    const active = value === String(artifact.active_value ?? "");
-    const button = `<button type="button" class="model-select" data-model-select
-      data-endpoint="${escapeHtml(rowAction.endpoint)}" data-connector-id="${escapeHtml(artifact.source)}"
-      data-value="${escapeHtml(value)}" ${active ? "disabled" : ""}>${active ? "Active" : escapeHtml(rowAction.label)}</button>`;
-    return `<tr>${cells}<td>${button}</td></tr>`;
+    return `<tr>${cells}</tr>`;
   }).join("");
   const actions = options.settings ? [] : artifactActions(artifact, application);
   const actionButtons = actions.length
@@ -627,30 +617,6 @@ byId("artifact-grid").addEventListener("click", async (event) => {
     });
     return;
   }
-  const button = event.target.closest("[data-model-select]");
-  if (!button) return;
-  button.disabled = true;
-  const notice = byId("notice");
-  notice.textContent = `Verifying ${button.dataset.value} with the provider…`;
-  notice.hidden = false;
-  try {
-    const state = await api(button.dataset.endpoint || "/api/connectors/select", {
-      method: "POST",
-      body: JSON.stringify({
-        connector_id: button.dataset.connectorId,
-        value: button.dataset.value,
-      }),
-    });
-    render(state);
-    const successNotice = byId("notice");
-    successNotice.textContent = `${state.selection.value} is now powering your Cordia Agent.`;
-    successNotice.hidden = false;
-  } catch (error) {
-    render(error.payload || currentState);
-    const errorNotice = byId("notice");
-    errorNotice.textContent = error.message;
-    errorNotice.hidden = false;
-  }
 });
 
 byId("artifact-grid").addEventListener("submit", async (event) => {
@@ -659,23 +625,6 @@ byId("artifact-grid").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = form.querySelector('[name="artifact_prompt"]');
   if (!input?.disabled) await sendAgentMessage(input.value, { input, artifactId: form.dataset.artifactId });
-});
-
-byId("workspace-models").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-model-select]");
-  if (!button) return;
-  button.disabled = true;
-  try {
-    const state = await api(button.dataset.endpoint || "/api/connectors/select", {
-      method: "POST",
-      body: JSON.stringify({ connector_id: button.dataset.connectorId, value: button.dataset.value }),
-    });
-    render(state);
-    byId("workspace-runtime").textContent = `${state.selection.value} is now powering your Cordia Agent.`;
-  } catch (error) {
-    button.disabled = false;
-    byId("workspace-runtime").textContent = error.message;
-  }
 });
 
 const accountMenuButton = byId("account-menu-button");

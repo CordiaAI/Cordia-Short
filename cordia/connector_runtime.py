@@ -67,8 +67,7 @@ class ConnectorRuntime:
             return {
                 "status": "needs_configuration",
                 "applications": [],
-                "message": "Universal connector catalog is unavailable. Server configuration missing: "
-                + ", ".join(missing),
+                "message": "Universal connector catalog is unavailable until Cordia finishes server configuration.",
             }
         return {"status": "ready", "applications": self.search_applications(query, limit)}
 
@@ -77,7 +76,7 @@ class ConnectorRuntime:
             return self._token
         missing = self.missing_configuration()
         if missing:
-            raise ConnectorError("connector provider configuration missing: " + ", ".join(missing))
+            raise ConnectorError("connector provider is not configured")
         try:
             response = self.transport(
                 "POST",
@@ -199,7 +198,7 @@ class ConnectorRuntime:
                 "connector_id": str(connector_id),
                 "title": "Connect application",
                 "status": "needs_configuration",
-                "message": "Universal connector provider configuration missing: " + ", ".join(missing),
+                "message": "Connections are unavailable until Cordia finishes server configuration.",
             }
         application = self.application(connector_id)
         account = self._provider_account(user_id, application["id"])
@@ -294,14 +293,6 @@ class ConnectorRuntime:
     def decorate_artifact(self, user_id: int, artifact: dict) -> dict:
         del user_id
         return artifact
-
-    def live_view_access(self, user_id: int, connector_id: str) -> dict:
-        del user_id
-        return {"status": "unsupported", "connector_id": connector_id}
-
-    def select_value(self, user_id: int, connector_id: str, value: str) -> dict:
-        del user_id, connector_id, value
-        raise ConnectorError("application-specific selectors are not part of the connector catalog")
 
     def agent_provider(self, user_id: int) -> None:
         del user_id
