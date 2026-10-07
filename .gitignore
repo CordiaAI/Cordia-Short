@@ -1,4 +1,7 @@
-.env.local
+.env*
+!.env.example
+*.pem
+*.key
 .venv/
 __pycache__/
 *.pyc

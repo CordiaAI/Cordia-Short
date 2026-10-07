@@ -97,14 +97,6 @@ class FakeRuntime:
         del user_id
         return artifact
 
-    def live_view_access(self, user_id, connector_id):
-        del user_id
-        return {"status": "unsupported", "connector_id": connector_id}
-
-    def select_value(self, user_id, connector_id, value):
-        del user_id, connector_id, value
-        raise RuntimeError("unsupported")
-
 
 class FakeWorkspace:
     def __init__(self, runtime):

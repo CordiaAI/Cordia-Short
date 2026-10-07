@@ -64,6 +64,12 @@ class PostgresStoreTests(PostgresTestCase):
         self.store.end_session(token)
         self.assertIsNone(self.store.user_for_session(token))
 
+    def test_rate_limits_count_and_reset_in_postgres(self):
+        self.assertFalse(self.store.rate_limited("signin_email:pg@example.com", 2, 60))
+        self.assertFalse(self.store.rate_limited("signin_email:pg@example.com", 2, 60))
+        self.assertTrue(self.store.rate_limited("signin_email:pg@example.com", 2, 60))
+        self.assertFalse(self.store.rate_limited("signin_email:pg@example.com", 2, 0))
+
     def test_completed_survey_writes_workspace_documents_to_postgres(self):
         user_id = complete_all_stages(self.store)
         documents = self.store.complete_onboarding(user_id, CONNECTORS)

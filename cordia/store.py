@@ -20,6 +20,7 @@ from cordia.survey import PERSISTED_STAGES, SCHEMA_VERSION, validate_stage
 
 
 SURVEY_FIELDS = ("name", "role", "goal", "apps", "communication")
+MAX_PASSWORD_LENGTH = 256
 SURVEY_LABELS = {
     "name": "Name",
     "role": "Role",
@@ -177,6 +178,11 @@ class Store:
                     label TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rate_limits (
+                    bucket TEXT PRIMARY KEY,
+                    window_start TEXT NOT NULL,
+                    hits INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS workspace_documents (
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
@@ -262,8 +268,10 @@ class Store:
 
     @staticmethod
     def _normalize_email(email: str) -> str:
+        if not isinstance(email, str):
+            raise ValueError("valid email required")
         normalized = email.strip().lower()
-        if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        if len(normalized) > 320 or "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
             raise ValueError("valid email required")
         return normalized
 
@@ -271,6 +279,8 @@ class Store:
     def _hash_password(password: str, salt: bytes | None = None) -> str:
         if len(password) < 12:
             raise ValueError("password must be at least 12 characters")
+        if len(password) > MAX_PASSWORD_LENGTH:
+            raise ValueError(f"password must be at most {MAX_PASSWORD_LENGTH} characters")
         salt = salt or secrets.token_bytes(16)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 240_000)
         return "pbkdf2_sha256$240000${}${}".format(
@@ -290,6 +300,31 @@ class Store:
         except (ValueError, TypeError):
             return False
 
+    def rate_limited(self, bucket: str, limit: int, window_seconds: int) -> bool:
+        """Count one hit in a fixed window; True once the window holds more than ``limit`` hits.
+
+        Stored in the database so the limit holds across serverless instances.
+        """
+        now = self._now()
+        key = hashlib.sha256(bucket.encode()).hexdigest()
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT window_start, hits FROM rate_limits WHERE bucket = ?", (key,)
+            ).fetchone()
+            if row and datetime.fromisoformat(row["window_start"]) > now - timedelta(seconds=window_seconds):
+                hits = int(row["hits"]) + 1
+                connection.execute("UPDATE rate_limits SET hits = ? WHERE bucket = ?", (hits, key))
+            else:
+                hits = 1
+                connection.execute(
+                    """
+                    INSERT INTO rate_limits(bucket, window_start, hits) VALUES (?, ?, 1)
+                    ON CONFLICT(bucket) DO UPDATE SET window_start = excluded.window_start, hits = 1
+                    """,
+                    (key, now.isoformat()),
+                )
+        return hits > limit
+
     def register(self, email: str, password: str) -> int:
         normalized = self._normalize_email(email)
         password_hash = self._hash_password(password)
@@ -304,6 +339,8 @@ class Store:
             raise ValueError("email already registered") from exc
 
     def authenticate(self, email: str, password: str) -> int | None:
+        if not isinstance(password, str) or len(password) > MAX_PASSWORD_LENGTH:
+            return None
         try:
             normalized = self._normalize_email(email)
         except ValueError:

@@ -1,81 +1,36 @@
 # Cordia Short Next Change Contract
 
-Status: **APPROVED**
-
-The previous provider-specific `CONNECTORS` extension was rejected. This replacement removes the static application allowlist and uses Pipedream Connect as the first dynamic catalog, managed-auth, and tool provider behind Cordia's existing runtime boundary.
+Status: **APPROVED** (user approval in chat, 2026-10-07)
 
 ## Observable user outcome
 
-Any Cordia customer can name or select an application returned by the external catalog, authorize it for their own account, and ask the Cordia Agent to discover and execute that application's provider-supplied tools. Named applications and actions in tests are examples only; no application-specific behavior is implemented in Cordia code.
+The public cannot brute-force sign-in, run up model costs, embed Cordia in another page, or read internal configuration and historical plans. Dead endpoints and files are gone. Developers work on branches and merge to `master` only after CI passes and a code owner approves.
 
 ## Official sources
 
-- Pipedream Connect overview: https://pipedream.com/docs/connect
-- App discovery: https://pipedream.com/docs/connect/app-discovery
-- Managed authentication: https://pipedream.com/docs/connect/managed-auth/quickstart
-- Connect token API: https://pipedream.com/docs/connect/api-reference/create-connect-token
-- Pipedream MCP for developers: https://pipedream.com/docs/connect/mcp/developers
-- MCP tools and managed credentials: https://pipedream.com/docs/connect/mcp
+- Flask security considerations: https://flask.palletsprojects.com/en/stable/web-security/
+- OWASP Secure Headers: https://owasp.org/www-project-secure-headers/
+- Vercel request headers (`x-real-ip`): https://vercel.com/docs/headers/request-headers
+- GitHub CODEOWNERS: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
-## Existing ownership and dependencies
+## Existing ownership
 
-- `cordia/connector_runtime.py` remains the only application catalog, connection, and execution owner; its static internals will be replaced, not duplicated.
-- `cordia/workspace_mcp.py` remains the only MCP client/server boundary.
-- `cordia/onboarding.py` and persisted Surveyor answers own selected-application state.
-- `app.py` owns authenticated workspace-state assembly, automatic FDE-build startup, and connector-return resumption.
-- `cordia/agent_runs.py` owns bounded agent runs, full evidence, retry context, and persisted visible responses.
-- `static/onboarding.js`, `static/app.js`, and `static/styles.css` own the existing Surveyor and workspace presentation.
+- `app.py` owns HTTP routes, cookies, and response handling.
+- `cordia/store.py` owns persistence, including the new `rate_limits` table.
+- `cordia/connector_runtime.py` owns connector configuration messages.
 
-## Files expected to change
+## Files changed
 
-- `app.py`
-- `cordia/agent_runs.py`
-- `cordia/connector_runtime.py`
-- `cordia/connectors.py`
-- `cordia/workspace_mcp.py`
-- `cordia/onboarding.py`
-- `static/app.js`
-- `static/onboarding.js`
-- `static/styles.css`
-- Connector, agent-run, application, and onboarding tests under `tests/`
-- `docs/superpowers/specs/2026-09-02-universal-connector-control-plane-design.md`
-- `docs/superpowers/plans/2026-09-02-universal-connector-control-plane.md`
-- This contract and `docs/CURRENT_BUILD_TRUTH.md`
+`app.py`, `cordia/store.py`, `cordia/connector_runtime.py`, `static/app.js`, `static/onboarding.js`, `site/vercel.json`, `.gitignore`, `README.md`, tests, this contract, `docs/CURRENT_BUILD_TRUTH.md`, new `.github/CODEOWNERS`, `.github/pull_request_template.md`, `CONTRIBUTING.md`, `SECURITY.md`, `tests/test_security.py`.
 
-## Preserve
+## Deleted
 
-- The single existing `ConnectorRuntime`, Workspace MCP boundary, setup-card flow, agent loop, and artifact system.
-- Cordia user identity as Pipedream `external_user_id` for strict per-customer isolation.
-- Provider account health or a successful provider-derived operation as the only transition to `verified`.
-- Full internal run evidence and full original assistant text for retries.
-
-## Replace or delete
-
-- Replace the `CONNECTORS` static allowlist, provider OAuth endpoints, provider scopes, provider operation maps, and checked-in provider logos.
-- Replace named `connect_service` and `run_operation` assumptions with application and tool discovery through the existing runtime and MCP boundary.
-- Delete the rejected unfinished Slack-specific edits and their tests.
+`/api/survey`, `/api/connectors/select`, `/api/connectors/live-view`, `ConnectorRuntime.live_view_access`, `ConnectorRuntime.select_value`, model-select UI, `scripts/verify_agent.py`, `tests/test_verification.py`, `design-qa.md`, `cordia-short-browser.png`, `static/assets/google-drive.png`, `docs/agent-framework.md`, `docs/superpowers/`.
 
 ## Non-goals
 
-- No deployment.
-- No app-specific OAuth, scopes, endpoints, tool names, logos, or execution branches in Cordia code.
-- No promise that every catalog application has every possible capability.
-- No second connector framework, new database, or background service.
-- No storage or collection of user passwords.
+No new auth system, no CAPTCHA, no change to the connector, agent, or Surveyor behavior.
 
-## Real acceptance test
+## Acceptance evidence
 
-Using two different catalog fixtures with different application IDs and tool schemas, prove the same search, selection, setup, verified-account, tool-discovery, approval, execution, and receipt path without changing production code. Then run the local browser from sign-in through Surveyor application selection and workspace setup. Without Pipedream credentials, the browser must truthfully report platform configuration is required rather than showing a fabricated catalog or connection.
-
-## Required evidence
-
-- Failing tests observed before production implementation.
-- Focused connector, agent-run, application, and browser-contract tests pass.
-- Full Python and JavaScript suites pass.
-- Python compilation and JavaScript syntax checks pass.
-- Browser output captures the local generic journey and has no console errors.
-- Source scan confirms no named application, provider OAuth endpoint, scope, operation, or logo remains in the runtime path.
-
-## User approval
-
-Approved by the user on 2026-09-02 after explicitly clarifying that Cordia is a multi-tenant software startup, all named applications/actions are examples rather than static requirements, and the connector path must be universal. The user then approved Pipedream Connect as the initial connector substrate and directed implementation to continue.
+Full Python and Node suites pass locally; `tests/test_security.py` covers headers, cookie flags, throttling, size caps, and malformed input; CI runs the Postgres rate-limit test.
